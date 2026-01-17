@@ -119,6 +119,49 @@ function toNumber(v: unknown): number {
   return 0;
 }
 
+async function getMyUserId(): Promise<string> {
+  const { data, error } = await supabase.auth.getUser();
+  if (error) throw new Error(error.message);
+  const uid = data.user?.id;
+  if (!uid) throw new Error("Not authenticated");
+  return uid;
+}
+
+/**
+ * IMPORTANT FIX:
+ * Supabase embedded relations sometimes come back as:
+ *  - object: { ... }
+ *  - array:  [{ ... }]
+ * Depending on how inference happens in TS / select aliases.
+ * We normalize to "single object".
+ */
+function one<T>(value: T | T[] | null | undefined): T | null {
+  if (value == null) return null;
+  return Array.isArray(value) ? (value[0] ?? null) : value;
+}
+
+function oneRequired<T>(value: T | T[] | null | undefined, label: string): T {
+  const v = one<T>(value);
+  if (!v) throw new Error(`Missing embedded relation: ${label}`);
+  return v;
+}
+
+function toAppointmentRow(r: any): AppointmentRow {
+  const customer = oneRequired<Customer>(r.customer, "customer");
+  const vehicle = oneRequired<Vehicle>(r.vehicle, "vehicle");
+
+  return {
+    id: String(r.id),
+    service_title: String(r.service_title ?? ""),
+    estimated_minutes: toNumber(r.estimated_minutes),
+    start_at: String(r.start_at),
+    status: r.status as AppointmentStatus,
+    notes: (r.notes ?? null) as string | null,
+    customer,
+    vehicle,
+  };
+}
+
 /** ================= PROFILE / SETTINGS ================= */
 
 export async function getMyProfile(): Promise<Profile> {
@@ -133,10 +176,12 @@ export async function getMyProfile(): Promise<Profile> {
 }
 
 export async function updateMyDisplayName(displayName: string): Promise<void> {
+  const uid = await getMyUserId();
+
   const { error } = await supabase
     .from("profiles")
     .update({ display_name: displayName.trim() || null })
-    .eq("user_id", (await supabase.auth.getUser()).data.user?.id ?? "");
+    .eq("user_id", uid);
 
   throwIfError(error);
 }
@@ -154,8 +199,8 @@ export async function getOrgSettings(): Promise<OrgSettings> {
   }
 
   return {
-    labor_rate_per_hour: toNumber(data.labor_rate_per_hour),
-    currency: (data.currency as string) || "RON",
+    labor_rate_per_hour: toNumber((data as any).labor_rate_per_hour),
+    currency: ((data as any).currency as string) || "RON",
   };
 }
 
@@ -250,7 +295,10 @@ export async function createVehicle(input: {
 
 /** ================= APPOINTMENTS ================= */
 
-export async function listAppointmentsBetween(startIso: string, endIso: string): Promise<AppointmentRow[]> {
+export async function listAppointmentsBetween(
+  startIso: string,
+  endIso: string,
+): Promise<AppointmentRow[]> {
   const { data, error } = await supabase
     .from("appointments")
     .select(
@@ -261,7 +309,10 @@ export async function listAppointmentsBetween(startIso: string, endIso: string):
     .order("start_at", { ascending: true });
 
   throwIfError(error);
-  return (data ?? []) as AppointmentRow[];
+
+  // Normalize embedded customer/vehicle regardless of object vs array
+  const rows = (data ?? []) as any[];
+  return rows.map(toAppointmentRow);
 }
 
 export async function listAppointmentsRecent(daysBack: number): Promise<AppointmentRow[]> {
@@ -278,7 +329,9 @@ export async function listAppointmentsRecent(daysBack: number): Promise<Appointm
     .order("start_at", { ascending: false });
 
   throwIfError(error);
-  return (data ?? []) as AppointmentRow[];
+
+  const rows = (data ?? []) as any[];
+  return rows.map(toAppointmentRow);
 }
 
 export async function createAppointment(input: {
@@ -305,8 +358,15 @@ export async function createAppointment(input: {
   throwIfError(error);
 }
 
-export async function updateAppointmentStatus(appointmentId: string, status: AppointmentStatus): Promise<void> {
-  const { error } = await supabase.from("appointments").update({ status }).eq("id", appointmentId);
+export async function updateAppointmentStatus(
+  appointmentId: string,
+  status: AppointmentStatus,
+): Promise<void> {
+  const { error } = await supabase
+    .from("appointments")
+    .update({ status })
+    .eq("id", appointmentId);
+
   throwIfError(error);
 }
 
@@ -368,13 +428,16 @@ export async function createOperation(input: {
   throwIfError(error);
 }
 
-export async function updateOperation(opId: string, patch: Partial<{
-  code: string | null;
-  name: string;
-  category: string | null;
-  norm_minutes: number;
-  is_active: boolean;
-}>): Promise<void> {
+export async function updateOperation(
+  opId: string,
+  patch: Partial<{
+    code: string | null;
+    name: string;
+    category: string | null;
+    norm_minutes: number;
+    is_active: boolean;
+  }>,
+): Promise<void> {
   const { error } = await supabase.from("operations").update(patch).eq("id", opId);
   throwIfError(error);
 }
@@ -392,17 +455,22 @@ export async function listJobsRecent(limit = 50): Promise<JobRow[]> {
 
   throwIfError(error);
 
-  const rows = (data ?? []) as Array<any>;
-  return rows.map((r) => ({
-    id: r.id as string,
-    appointment_id: (r.appointment_id as string | null) ?? null,
-    progress: r.progress as JobProgressStatus,
-    discount_value: toNumber(r.discount_value),
-    notes: (r.notes as string | null) ?? null,
-    created_at: r.created_at as string,
-    customer: r.customer as Customer,
-    vehicle: r.vehicle as Vehicle,
-  }));
+  const rows = (data ?? []) as any[];
+  return rows.map((r) => {
+    const customer = oneRequired<Customer>(r.customer, "customer");
+    const vehicle = oneRequired<Vehicle>(r.vehicle, "vehicle");
+
+    return {
+      id: String(r.id),
+      appointment_id: (r.appointment_id as string | null) ?? null,
+      progress: r.progress as JobProgressStatus,
+      discount_value: toNumber(r.discount_value),
+      notes: (r.notes as string | null) ?? null,
+      created_at: String(r.created_at),
+      customer,
+      vehicle,
+    };
+  });
 }
 
 export async function createJob(input: {
@@ -428,19 +496,21 @@ export async function createJob(input: {
 
   throwIfError(error);
   if (!data) throw new Error("Failed to create job");
-  return data.id as string;
+  return (data as any).id as string;
 }
 
-export async function updateJobMeta(jobId: string, patch: Partial<{
-  discount_value: number;
-  notes: string | null;
-}>): Promise<void> {
+export async function updateJobMeta(
+  jobId: string,
+  patch: Partial<{
+    discount_value: number;
+    notes: string | null;
+  }>,
+): Promise<void> {
   const { error } = await supabase.from("jobs").update(patch).eq("id", jobId);
   throwIfError(error);
 }
 
 export async function updateJobProgress(jobId: string, next: JobProgressStatus): Promise<void> {
-  // 1) get current status + org_id
   const { data: cur, error: curErr } = await supabase
     .from("jobs")
     .select("org_id, progress")
@@ -450,16 +520,14 @@ export async function updateJobProgress(jobId: string, next: JobProgressStatus):
   throwIfError(curErr);
   if (!cur) throw new Error("Job not found");
 
-  const fromStatus = cur.progress as JobProgressStatus;
-  const orgId = cur.org_id as string;
+  const fromStatus = (cur as any).progress as JobProgressStatus;
+  const orgId = (cur as any).org_id as string;
 
-  // 2) update job
   const { error: upErr } = await supabase.from("jobs").update({ progress: next }).eq("id", jobId);
   throwIfError(upErr);
 
-  // 3) history insert (best-effort)
-  const { data: userData } = await supabase.auth.getUser();
-  const uid = userData.user?.id ?? null;
+  // history insert (best-effort)
+  const uid = await getMyUserId().catch(() => null);
 
   const { error: histErr } = await supabase.from("job_status_history").insert({
     org_id: orgId,
@@ -475,23 +543,25 @@ export async function updateJobProgress(jobId: string, next: JobProgressStatus):
 export async function listJobItems(jobId: string): Promise<JobItemRow[]> {
   const { data, error } = await supabase
     .from("job_items")
-    .select("id, item_type, title, qty, unit_price, operation_id, norm_minutes, created_at, operation:operations(id, code, name, category, norm_minutes)")
+    .select(
+      "id, item_type, title, qty, unit_price, operation_id, norm_minutes, created_at, operation:operations(id, code, name, category, norm_minutes)",
+    )
     .eq("job_id", jobId)
     .order("created_at", { ascending: true });
 
   throwIfError(error);
 
-  const rows = (data ?? []) as Array<any>;
+  const rows = (data ?? []) as any[];
   return rows.map((r) => ({
-    id: r.id as string,
+    id: String(r.id),
     item_type: r.item_type as JobItemType,
-    title: r.title as string,
+    title: String(r.title),
     qty: toNumber(r.qty),
     unit_price: toNumber(r.unit_price),
     operation_id: (r.operation_id as string | null) ?? null,
     norm_minutes: (r.norm_minutes as number | null) ?? null,
-    created_at: r.created_at as string,
-    operation: (r.operation as any) ?? null,
+    created_at: String(r.created_at),
+    operation: one<Pick<Operation, "id" | "code" | "name" | "category" | "norm_minutes">>((r.operation as any) ?? null),
   }));
 }
 
@@ -526,7 +596,10 @@ export async function deleteJobItem(itemId: string): Promise<void> {
 
 /** ================= REPORTS ================= */
 
-export async function listFinishedJobsWithItemsBetween(startIso: string, endIso: string): Promise<ReportJobRow[]> {
+export async function listFinishedJobsWithItemsBetween(
+  startIso: string,
+  endIso: string,
+): Promise<ReportJobRow[]> {
   const { data, error } = await supabase
     .from("jobs")
     .select(
@@ -539,13 +612,18 @@ export async function listFinishedJobsWithItemsBetween(startIso: string, endIso:
 
   throwIfError(error);
 
-  const rows = (data ?? []) as Array<any>;
-  return rows.map((r) => ({
-    id: r.id as string,
-    created_at: r.created_at as string,
-    discount_value: toNumber(r.discount_value),
-    customer: r.customer as Customer,
-    vehicle: r.vehicle as Vehicle,
-    items: (r.items ?? []) as ReportJobRow["items"],
-  }));
+  const rows = (data ?? []) as any[];
+  return rows.map((r) => {
+    const customer = oneRequired<Customer>(r.customer, "customer");
+    const vehicle = oneRequired<Vehicle>(r.vehicle, "vehicle");
+
+    return {
+      id: String(r.id),
+      created_at: String(r.created_at),
+      discount_value: toNumber(r.discount_value),
+      customer,
+      vehicle,
+      items: (r.items ?? []) as ReportJobRow["items"],
+    };
+  });
 }
