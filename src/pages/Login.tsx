@@ -1,7 +1,10 @@
 import { useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { supabase } from "../lib/supabase";
 
 export default function LoginPage() {
+  const navigate = useNavigate();
+
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
@@ -12,10 +15,25 @@ export default function LoginPage() {
     setErr(null);
     setLoading(true);
 
-    const { error } = await supabase.auth.signInWithPassword({ email, password });
+    const { data, error } = await supabase.auth.signInWithPassword({
+      email: email.trim(),
+      password,
+    });
 
     setLoading(false);
-    if (error) setErr(error.message);
+
+    if (error) {
+      setErr(error.message);
+      return;
+    }
+
+    // Login OK -> mergem direct în app
+    if (data.session) {
+      navigate("/calendar", { replace: true });
+    } else {
+      // fallback (rar)
+      navigate("/calendar", { replace: true });
+    }
   }
 
   return (
