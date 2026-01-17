@@ -668,4 +668,181 @@ export default function JobsPage() {
             <button
               className={`btn ${createMode === "manual" ? "primary" : ""}`}
               type="button"
-              onClick={()
+              onClick={() => setCreateMode("manual")}
+            >
+              Manual
+            </button>
+          </div>
+
+          {createMode === "appointment" ? (
+            <div>
+              <div className="muted" style={{ marginBottom: 6 }}>Alege programare (ultimele 14 zile)</div>
+              <select className="select" value={appointmentId} onChange={(e) => setAppointmentId(e.target.value)}>
+                <option value="">Selectează…</option>
+                {recentAppointments.map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {fmtDateTime(a.start_at)} — {a.customer.name} — {a.service_title}
+                  </option>
+                ))}
+              </select>
+              <div className="muted" style={{ marginTop: 6 }}>
+                Clientul și vehiculul se preiau automat din programare.
+              </div>
+            </div>
+          ) : (
+            <div className="grid2">
+              <div>
+                <div className="muted" style={{ marginBottom: 6 }}>Client</div>
+                <div className="row" style={{ marginBottom: 8 }}>
+                  <button className={`btn ${customerMode === "existing" ? "primary" : ""}`} type="button" onClick={() => setCustomerMode("existing")}>
+                    Existent
+                  </button>
+                  <button className={`btn ${customerMode === "new" ? "primary" : ""}`} type="button" onClick={() => setCustomerMode("new")}>
+                    Nou
+                  </button>
+                </div>
+
+                {customerMode === "existing" ? (
+                  <select className="select" value={customerId} onChange={(e) => setCustomerId(e.target.value)}>
+                    <option value="">Selectează client…</option>
+                    {customers.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.name} {c.phone ? `(${c.phone})` : ""}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <div style={{ display: "grid", gap: 8 }}>
+                    <input className="input" placeholder="Nume client *" value={customerName} onChange={(e) => setCustomerName(e.target.value)} />
+                    <input className="input" placeholder="Telefon" value={customerPhone} onChange={(e) => setCustomerPhone(e.target.value)} />
+                    <input className="input" placeholder="Email" value={customerEmail} onChange={(e) => setCustomerEmail(e.target.value)} />
+                  </div>
+                )}
+              </div>
+
+              <div>
+                <div className="muted" style={{ marginBottom: 6 }}>Vehicul</div>
+                <div className="row" style={{ marginBottom: 8 }}>
+                  <button
+                    className={`btn ${vehicleMode === "existing" ? "primary" : ""}`}
+                    type="button"
+                    onClick={() => setVehicleMode("existing")}
+                    disabled={customerMode === "new"}
+                  >
+                    Existent
+                  </button>
+                  <button
+                    className={`btn ${vehicleMode === "new" ? "primary" : ""}`}
+                    type="button"
+                    onClick={() => setVehicleMode("new")}
+                  >
+                    Nou
+                  </button>
+                </div>
+
+                {vehicleMode === "existing" && customerMode !== "new" ? (
+                  <select className="select" value={vehicleId} onChange={(e) => setVehicleId(e.target.value)}>
+                    <option value="">Selectează vehicul…</option>
+                    {vehicles.map((v) => (
+                      <option key={v.id} value={v.id}>
+                        {vehicleLabel(v)}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <div style={{ display: "grid", gap: 8 }}>
+                    <input className="input" placeholder="Marca" value={make} onChange={(e) => setMake(e.target.value)} />
+                    <input className="input" placeholder="Model" value={model} onChange={(e) => setModel(e.target.value)} />
+                    <input className="input" placeholder="An" value={year} onChange={(e) => setYear(e.target.value)} />
+                    <input className="input" placeholder="Număr" value={plate} onChange={(e) => setPlate(e.target.value)} />
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          <div>
+            <div className="muted" style={{ marginBottom: 6 }}>Note (opțional)</div>
+            <textarea className="textarea" value={jobNotes} onChange={(e) => setJobNotes(e.target.value)} />
+          </div>
+
+          <div className="row" style={{ justifyContent: "flex-end" }}>
+            <button className="btn primary" disabled={creating} onClick={() => void onCreateJob()}>
+              {creating ? "Creez…" : "Creează lucrare"}
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Add Item modal */}
+      <Modal open={openItem} title="Adaugă linie" onClose={() => setOpenItem(false)}>
+        <div style={{ display: "grid", gap: 10 }}>
+          <div className="grid2">
+            <div>
+              <div className="muted" style={{ marginBottom: 6 }}>Tip</div>
+              <select className="select" value={itemType} onChange={(e) => setItemType(e.target.value as JobItemType)}>
+                <option value="labor">Manoperă</option>
+                <option value="part">Piesă</option>
+                <option value="other">Altceva</option>
+              </select>
+            </div>
+
+            <div>
+              <div className="muted" style={{ marginBottom: 6 }}>Cantitate</div>
+              <input className="input" value={itemQty} onChange={(e) => setItemQty(e.target.value)} />
+            </div>
+          </div>
+
+          {itemType === "labor" ? (
+            <>
+              <div>
+                <div className="muted" style={{ marginBottom: 6 }}>Operațiune (din normativ)</div>
+                <select className="select" value={opId} onChange={(e) => setOpId(e.target.value)}>
+                  <option value="">Selectează…</option>
+                  {operations.map((o) => (
+                    <option key={o.id} value={o.id}>
+                      {(o.code ? `${o.code} — ` : "") + o.name} ({o.norm_minutes} min)
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="grid2">
+                <div>
+                  <div className="muted" style={{ marginBottom: 6 }}>Denumire</div>
+                  <input className="input" value={itemTitle} onChange={(e) => setItemTitle(e.target.value)} />
+                </div>
+                <div>
+                  <div className="muted" style={{ marginBottom: 6 }}>Minute (per operațiune)</div>
+                  <input className="input" value={itemNormMinutes} onChange={(e) => setItemNormMinutes(e.target.value)} />
+                </div>
+              </div>
+
+              <div className="muted">
+                Costul manoperei se calculează automat după tarif: <b>{moneyRON(laborRate)}</b> / oră.
+              </div>
+            </>
+          ) : (
+            <>
+              <div>
+                <div className="muted" style={{ marginBottom: 6 }}>Denumire</div>
+                <input className="input" value={itemTitle} onChange={(e) => setItemTitle(e.target.value)} />
+              </div>
+
+              <div>
+                <div className="muted" style={{ marginBottom: 6 }}>Preț / unitate (RON)</div>
+                <input className="input" value={itemUnitPrice} onChange={(e) => setItemUnitPrice(e.target.value)} />
+              </div>
+            </>
+          )}
+
+          <div className="row" style={{ justifyContent: "flex-end" }}>
+            <button className="btn primary" disabled={savingItem} onClick={() => void onSaveItem()}>
+              {savingItem ? "Salvez…" : "Adaugă"}
+            </button>
+          </div>
+        </div>
+      </Modal>
+    </div>
+  );
+}
