@@ -28,6 +28,10 @@ body {
   margin: 0;
 }
 
+body, input, button, select, textarea {
+  font-family: inherit;
+}
+
 /* Layout */
 .layout {
   display: grid;
