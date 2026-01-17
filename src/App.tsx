@@ -26,18 +26,15 @@ function ProtectedApp() {
 export default function App() {
   const { session, ready } = useSession();
 
-  if (!ready) return <div style={{ padding: 24 }}>Loading...</div>;
+  if (!ready) return <div className="card card-pad">Loading…</div>;
 
   return (
     <HashRouter>
       <Routes>
-        {/* IMPORTANT: dacă ești deja logat și intri pe /login, te duce direct în app */}
         <Route
           path="/login"
           element={session ? <Navigate to="/calendar" replace /> : <LoginPage />}
         />
-
-        {/* Restul app-ului */}
         <Route
           path="/*"
           element={session ? <ProtectedApp /> : <Navigate to="/login" replace />}
