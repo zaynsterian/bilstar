@@ -1,31 +1,42 @@
 name: pr-build
 
 on:
-  push:
-    branches: [ "main" ]
   pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+concurrency:
+  group: pr-build-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build-windows:
+    name: Build Windows (Tauri)
     runs-on: windows-latest
+
     env:
       VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
       VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
-    steps:
-      - uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v4
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
         with:
           node-version: 20
+          cache: npm
 
-      - name: Install
+      - name: Install dependencies
         run: npm ci
 
-      - name: Build
+      - name: Build (Tauri)
         run: npm run tauri build
 
-      - name: Upload artifact
+      - name: Upload Windows bundle artifact
         uses: actions/upload-artifact@v4
         with:
           name: bilstar-windows-bundle
           path: src-tauri/target/release/bundle/**/*
+          if-no-files-found: error
