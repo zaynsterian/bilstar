@@ -1,42 +1,38 @@
 import { NavLink, Outlet } from "react-router-dom";
 import { supabase } from "../lib/supabase";
 
-const linkStyle = ({ isActive }: { isActive: boolean }) => ({
-  padding: "10px 12px",
-  borderRadius: 10,
-  textDecoration: "none",
-  color: "inherit",
-  background: isActive ? "rgba(0,0,0,0.08)" : "transparent",
-  fontWeight: isActive ? 700 : 500,
-});
-
 export default function AppShell() {
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "240px 1fr", height: "100vh" }}>
-      <aside style={{ borderRight: "1px solid rgba(0,0,0,0.12)", padding: 14 }}>
-        <div style={{ fontWeight: 800, marginBottom: 14, fontSize: 18 }}>
-          Bilstar Service
-        </div>
+    <div className="layout">
+      <aside className="sidebar">
+        <div className="brand">Bilstar Service</div>
 
-        <nav style={{ display: "grid", gap: 6 }}>
-          <NavLink to="/calendar" style={linkStyle}>Programări</NavLink>
-          <NavLink to="/normative" style={linkStyle}>Normativ</NavLink>
-          <NavLink to="/jobs" style={linkStyle}>Lucrări</NavLink>
-          <NavLink to="/reports" style={linkStyle}>Rapoarte</NavLink>
-          <NavLink to="/settings" style={linkStyle}>Setări</NavLink>
+        <nav className="nav">
+          <NavLink to="/calendar" className={({ isActive }) => (isActive ? "nav-link active" : "nav-link")}>
+            Programări
+          </NavLink>
+          <NavLink to="/normative" className={({ isActive }) => (isActive ? "nav-link active" : "nav-link")}>
+            Normativ
+          </NavLink>
+          <NavLink to="/jobs" className={({ isActive }) => (isActive ? "nav-link active" : "nav-link")}>
+            Lucrări
+          </NavLink>
+          <NavLink to="/reports" className={({ isActive }) => (isActive ? "nav-link active" : "nav-link")}>
+            Rapoarte
+          </NavLink>
+          <NavLink to="/settings" className={({ isActive }) => (isActive ? "nav-link active" : "nav-link")}>
+            Setări
+          </NavLink>
         </nav>
 
-        <div style={{ marginTop: 18 }}>
-          <button
-            onClick={() => supabase.auth.signOut()}
-            style={{ width: "100%", padding: "10px 12px", borderRadius: 10 }}
-          >
+        <div style={{ marginTop: 14 }}>
+          <button className="btn full" onClick={() => supabase.auth.signOut()}>
             Logout
           </button>
         </div>
       </aside>
 
-      <main style={{ padding: 16, overflow: "auto" }}>
+      <main className="main">
         <Outlet />
       </main>
     </div>
