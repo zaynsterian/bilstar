@@ -27,47 +27,37 @@ export default function LoginPage() {
       return;
     }
 
-    // Login OK -> mergem direct în app
-    if (data.session) {
-      navigate("/calendar", { replace: true });
-    } else {
-      // fallback (rar)
-      navigate("/calendar", { replace: true });
-    }
+    if (data.session) navigate("/calendar", { replace: true });
   }
 
   return (
     <div style={{ minHeight: "100vh", display: "grid", placeItems: "center", padding: 24 }}>
-      <div style={{ width: 420, border: "1px solid rgba(0,0,0,0.12)", borderRadius: 16, padding: 18 }}>
-        <div style={{ fontWeight: 900, fontSize: 22 }}>Bilstar v0.0</div>
-        <div style={{ opacity: 0.75, marginTop: 6 }}>Autentificare</div>
+      <div className="card card-pad" style={{ width: 440 }}>
+        <div className="h1">Bilstar</div>
+        <div className="muted" style={{ marginTop: 6 }}>Autentificare</div>
 
         <form onSubmit={onSubmit} style={{ display: "grid", gap: 10, marginTop: 14 }}>
           <input
+            className="input"
             placeholder="Email"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
             autoComplete="email"
-            style={{ padding: 10, borderRadius: 10, border: "1px solid rgba(0,0,0,0.2)" }}
           />
           <input
+            className="input"
             placeholder="Parolă"
             type="password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             autoComplete="current-password"
-            style={{ padding: 10, borderRadius: 10, border: "1px solid rgba(0,0,0,0.2)" }}
           />
 
-          <button
-            type="submit"
-            disabled={loading}
-            style={{ padding: 10, borderRadius: 10, fontWeight: 700 }}
-          >
-            {loading ? "Se conectează..." : "Login"}
+          <button type="submit" disabled={loading} className="btn primary">
+            {loading ? "Se conectează…" : "Login"}
           </button>
 
-          {err && <div style={{ color: "crimson", fontWeight: 600 }}>{err}</div>}
+          {err && <div style={{ color: "crimson", fontWeight: 800 }}>{err}</div>}
         </form>
       </div>
     </div>
