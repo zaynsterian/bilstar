@@ -1,51 +1,39 @@
-import { useState } from "react";
-import reactLogo from "./assets/react.svg";
-import { invoke } from "@tauri-apps/api/core";
-import "./App.css";
+import { HashRouter, Navigate, Route, Routes } from "react-router-dom";
+import LoginPage from "./pages/Login";
+import CalendarPage from "./pages/Calendar";
+import NormativePage from "./pages/Normative";
+import JobsPage from "./pages/Jobs";
+import ReportsPage from "./pages/Reports";
+import SettingsPage from "./pages/Settings";
+import AppShell from "./layout/AppShell";
+import { useSession } from "./auth/useSession";
 
-function App() {
-  const [greetMsg, setGreetMsg] = useState("");
-  const [name, setName] = useState("");
-
-  async function greet() {
-    // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-    setGreetMsg(await invoke("greet", { name }));
-  }
-
+function ProtectedApp() {
   return (
-    <main className="container">
-      <h1>Welcome to Tauri + React</h1>
-
-      <div className="row">
-        <a href="https://vite.dev" target="_blank">
-          <img src="/vite.svg" className="logo vite" alt="Vite logo" />
-        </a>
-        <a href="https://tauri.app" target="_blank">
-          <img src="/tauri.svg" className="logo tauri" alt="Tauri logo" />
-        </a>
-        <a href="https://react.dev" target="_blank">
-          <img src={reactLogo} className="logo react" alt="React logo" />
-        </a>
-      </div>
-      <p>Click on the Tauri, Vite, and React logos to learn more.</p>
-
-      <form
-        className="row"
-        onSubmit={(e) => {
-          e.preventDefault();
-          greet();
-        }}
-      >
-        <input
-          id="greet-input"
-          onChange={(e) => setName(e.currentTarget.value)}
-          placeholder="Enter a name..."
-        />
-        <button type="submit">Greet</button>
-      </form>
-      <p>{greetMsg}</p>
-    </main>
+    <Routes>
+      <Route element={<AppShell />}>
+        <Route path="/calendar" element={<CalendarPage />} />
+        <Route path="/normative" element={<NormativePage />} />
+        <Route path="/jobs" element={<JobsPage />} />
+        <Route path="/reports" element={<ReportsPage />} />
+        <Route path="/settings" element={<SettingsPage />} />
+        <Route path="*" element={<Navigate to="/calendar" replace />} />
+      </Route>
+    </Routes>
   );
 }
 
-export default App;
+export default function App() {
+  const { session, ready } = useSession();
+
+  if (!ready) return <div style={{ padding: 24 }}>Loading...</div>;
+
+  return (
+    <HashRouter>
+      <Routes>
+        <Route path="/login" element={<LoginPage />} />
+        <Route path="/*" element={session ? <ProtectedApp /> : <Navigate to="/login" replace />} />
+      </Routes>
+    </HashRouter>
+  );
+}
