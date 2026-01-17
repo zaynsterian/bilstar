@@ -31,8 +31,17 @@ export default function App() {
   return (
     <HashRouter>
       <Routes>
-        <Route path="/login" element={<LoginPage />} />
-        <Route path="/*" element={session ? <ProtectedApp /> : <Navigate to="/login" replace />} />
+        {/* IMPORTANT: dacă ești deja logat și intri pe /login, te duce direct în app */}
+        <Route
+          path="/login"
+          element={session ? <Navigate to="/calendar" replace /> : <LoginPage />}
+        />
+
+        {/* Restul app-ului */}
+        <Route
+          path="/*"
+          element={session ? <ProtectedApp /> : <Navigate to="/login" replace />}
+        />
       </Routes>
     </HashRouter>
   );
