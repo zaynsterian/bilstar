@@ -10,8 +10,8 @@ import type {
   DatesSetArg,
   EventClickArg,
   EventDropArg,
-  EventResizeDoneArg,
-} from "@fullcalendar/core";
+  EventDropArg,
+} from \"@fullcalendar/core\";
 
 import "@fullcalendar/core/index.css";
 import "@fullcalendar/daygrid/index.css";
@@ -44,6 +44,16 @@ const STATUS_LABEL: Record<AppointmentStatus, string> = {
   cancelled: "Anulat",
   no_show: "No-show",
 };
+
+type EventResizeArg = {
+  event: {
+    id: string;
+    start: Date | null;
+    end: Date | null;
+  };
+  revert: () => void;
+};
+
 
 function ymdInTimeZone(d: Date, timeZone: string) {
   const parts = new Intl.DateTimeFormat("en-CA", {
@@ -359,7 +369,7 @@ export default function CalendarPage() {
     }
   }
 
-  async function onEventResize(arg: EventResizeDoneArg) {
+  async function onEventResize(arg: EventResizeArg) {
     try {
       const id = arg.event.id;
       const start = arg.event.start;

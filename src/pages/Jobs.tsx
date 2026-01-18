@@ -559,7 +559,7 @@ export default function JobsPage() {
 
       return [
         String(idx + 1),
-        it.item_type === "labor" ? "Manoperă" : it.item_type === "parts" ? "Piese" : "Altele",
+        it.item_type === "labor" ? "Manoperă" : it.item_type === "part" ? "Piese" : "Altele",
         it.title,
         String(it.qty ?? 0),
         it.item_type === "labor" ? `${it.norm_minutes ?? 0} min/op` : moneyRON(it.unit_price ?? 0),
