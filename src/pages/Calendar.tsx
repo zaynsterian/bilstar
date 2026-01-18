@@ -7,11 +7,6 @@ import interactionPlugin from "@fullcalendar/interaction";
 import listPlugin from "@fullcalendar/list";
 import type { DateSelectArg, DatesSetArg, EventClickArg, EventDropArg } from "@fullcalendar/core";
 
-import "@fullcalendar/core/index.css";
-import "@fullcalendar/daygrid/index.css";
-import "@fullcalendar/timegrid/index.css";
-import "@fullcalendar/list/index.css";
-
 import Modal from "../components/Modal";
 import {
   AppointmentRow,
