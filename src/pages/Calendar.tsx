@@ -5,13 +5,7 @@ import dayGridPlugin from "@fullcalendar/daygrid";
 import timeGridPlugin from "@fullcalendar/timegrid";
 import interactionPlugin from "@fullcalendar/interaction";
 import listPlugin from "@fullcalendar/list";
-import type {
-  DateSelectArg,
-  DatesSetArg,
-  EventClickArg,
-  EventDropArg,
-  EventDropArg,
-} from \"@fullcalendar/core\";
+import type { DateSelectArg, DatesSetArg, EventClickArg, EventDropArg } from "@fullcalendar/core";
 
 import "@fullcalendar/core/index.css";
 import "@fullcalendar/daygrid/index.css";
