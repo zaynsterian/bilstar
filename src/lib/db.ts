@@ -89,6 +89,16 @@ export type JobItemRow = {
   operation?: Pick<Operation, "id" | "code" | "name" | "category" | "norm_minutes"> | null;
 };
 
+export type JobAttachmentRow = {
+  id: string;
+  job_id: string;
+  org_id: string;
+  storage_path: string;
+  note: string | null;
+  created_by: string | null;
+  created_at: string;
+};
+
 export type ReportJobRow = {
   id: string;
   created_at: string;
@@ -370,6 +380,28 @@ export async function updateAppointmentStatus(
   throwIfError(error);
 }
 
+export async function updateAppointmentSchedule(
+  appointmentId: string,
+  patch: {
+    start_at?: string;
+    estimated_minutes?: number;
+    service_title?: string;
+    notes?: string | null;
+  },
+): Promise<void> {
+  const { error } = await supabase
+    .from("appointments")
+    .update(patch)
+    .eq("id", appointmentId);
+
+  throwIfError(error);
+}
+
+export async function deleteAppointment(appointmentId: string): Promise<void> {
+  const { error } = await supabase.from("appointments").delete().eq("id", appointmentId);
+  throwIfError(error);
+}
+
 /** ================= NORMATIVE (OPERATIONS) ================= */
 
 export async function listOperations(input?: {
@@ -440,6 +472,44 @@ export async function updateOperation(
 ): Promise<void> {
   const { error } = await supabase.from("operations").update(patch).eq("id", opId);
   throwIfError(error);
+}
+
+export async function upsertOperationsBulk(input: {
+  orgId: string;
+  rows: Array<{
+    code?: string | null;
+    name: string;
+    category?: string | null;
+    norm_minutes: number;
+    is_active?: boolean;
+  }>;
+  chunkSize?: number;
+}): Promise<{ upserted: number }>{
+  const chunkSize = Math.max(50, Math.min(1000, input.chunkSize ?? 500));
+
+  const cleaned = input.rows
+    .map((r) => ({
+      org_id: input.orgId,
+      code: (r.code ?? null) ? String(r.code).trim() || null : null,
+      name: String(r.name ?? "").trim(),
+      category: (r.category ?? null) ? String(r.category).trim() || null : null,
+      norm_minutes: Math.max(0, Math.floor(toNumber(r.norm_minutes))),
+      is_active: r.is_active ?? true,
+    }))
+    .filter((r) => r.name.length > 0);
+
+  let total = 0;
+
+  for (let i = 0; i < cleaned.length; i += chunkSize) {
+    const chunk = cleaned.slice(i, i + chunkSize);
+    const { error } = await supabase
+      .from("operations")
+      .upsert(chunk, { onConflict: "org_id,code" });
+    throwIfError(error);
+    total += chunk.length;
+  }
+
+  return { upserted: total };
 }
 
 /** ================= JOBS (WORK PROGRESS) ================= */
@@ -592,6 +662,49 @@ export async function createJobItem(input: {
 export async function deleteJobItem(itemId: string): Promise<void> {
   const { error } = await supabase.from("job_items").delete().eq("id", itemId);
   throwIfError(error);
+}
+
+/** ================= JOB ATTACHMENTS ================= */
+
+export async function listJobAttachments(jobId: string): Promise<JobAttachmentRow[]> {
+  const { data, error } = await supabase
+    .from("job_attachments")
+    .select("id, job_id, org_id, storage_path, note, created_by, created_at")
+    .eq("job_id", jobId)
+    .order("created_at", { ascending: false });
+
+  throwIfError(error);
+  return (data ?? []) as JobAttachmentRow[];
+}
+
+export async function createJobAttachmentRecord(input: {
+  orgId: string;
+  jobId: string;
+  storagePath: string;
+  note?: string;
+}): Promise<void> {
+  const { error } = await supabase.from("job_attachments").insert({
+    org_id: input.orgId,
+    job_id: input.jobId,
+    storage_path: input.storagePath,
+    note: input.note?.trim() || null,
+  });
+
+  throwIfError(error);
+}
+
+export async function deleteJobAttachmentRecord(attachmentId: string): Promise<JobAttachmentRow> {
+  // Return the row so UI can also delete from storage.
+  const { data, error } = await supabase
+    .from("job_attachments")
+    .delete()
+    .eq("id", attachmentId)
+    .select("id, job_id, org_id, storage_path, note, created_by, created_at")
+    .single();
+
+  throwIfError(error);
+  if (!data) throw new Error("Attachment not found");
+  return data as JobAttachmentRow;
 }
 
 /** ================= REPORTS ================= */

@@ -1,17 +1,36 @@
 import { useEffect, useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
+import FullCalendar from "@fullcalendar/react";
+import dayGridPlugin from "@fullcalendar/daygrid";
+import timeGridPlugin from "@fullcalendar/timegrid";
+import interactionPlugin from "@fullcalendar/interaction";
+import listPlugin from "@fullcalendar/list";
+import type {
+  DateSelectArg,
+  DatesSetArg,
+  EventClickArg,
+  EventDropArg,
+  EventResizeDoneArg,
+} from "@fullcalendar/core";
+
+import "@fullcalendar/core/index.css";
+import "@fullcalendar/daygrid/index.css";
+import "@fullcalendar/timegrid/index.css";
+import "@fullcalendar/list/index.css";
+
 import Modal from "../components/Modal";
 import {
   AppointmentRow,
   AppointmentStatus,
+  Customer,
+  Vehicle,
   createAppointment,
-  createCustomer,
-  createVehicle,
+  deleteAppointment,
   getMyProfile,
   listAppointmentsBetween,
   listCustomers,
   listVehiclesByCustomer,
-  Customer,
-  Vehicle,
+  updateAppointmentSchedule,
   updateAppointmentStatus,
 } from "../lib/db";
 
@@ -26,166 +45,189 @@ const STATUS_LABEL: Record<AppointmentStatus, string> = {
   no_show: "No-show",
 };
 
-function pad2(n: number) {
-  return String(n).padStart(2, "0");
+function ymdInTimeZone(d: Date, timeZone: string) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(d);
+
+  const y = parts.find((p) => p.type === "year")?.value ?? "1970";
+  const m = parts.find((p) => p.type === "month")?.value ?? "01";
+  const da = parts.find((p) => p.type === "day")?.value ?? "01";
+  return `${y}-${m}-${da}`;
 }
 
-function ymdInTimeZone(date: Date) {
+function toDatetimeLocalValueInTz(iso: string) {
+  const d = new Date(iso);
   const parts = new Intl.DateTimeFormat("en-CA", {
     timeZone: TIME_ZONE,
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
-  }).formatToParts(date);
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).formatToParts(d);
 
-  const map = Object.fromEntries(parts.filter((p) => p.type !== "literal").map((p) => [p.type, p.value]));
-  return `${map.year}-${map.month}-${map.day}`;
+  const y = parts.find((p) => p.type === "year")?.value ?? "1970";
+  const m = parts.find((p) => p.type === "month")?.value ?? "01";
+  const da = parts.find((p) => p.type === "day")?.value ?? "01";
+  const hh = parts.find((p) => p.type === "hour")?.value ?? "00";
+  const mm = parts.find((p) => p.type === "minute")?.value ?? "00";
+
+  return `${y}-${m}-${da}T${hh}:${mm}`;
 }
 
-function getTimeZoneOffsetMinutes(timeZone: string, date: Date): number {
-  const dtf = new Intl.DateTimeFormat("en-US", {
-    timeZone,
-    hour12: false,
+// Convert input "YYYY-MM-DDTHH:mm" assumed in Europe/Bucharest => UTC ISO
+function tzLocalInputToUtcIso(localValue: string): string {
+  const [datePart, timePart] = localValue.split("T");
+  const [y, m, d] = datePart.split("-").map((x) => parseInt(x, 10));
+  const [hh, mm] = timePart.split(":").map((x) => parseInt(x, 10));
+
+  // This is the intended wall time (Bucharest). We find its UTC instant by
+  // binary searching for a UTC time that formats to the same wall time in that timezone.
+  const target = { y, m, d, hh, mm };
+
+  // start from a rough guess: treat as local then adjust
+  let lo = Date.UTC(y, m - 1, d, hh, mm) - 6 * 60 * 60 * 1000;
+  let hi = Date.UTC(y, m - 1, d, hh, mm) + 6 * 60 * 60 * 1000;
+
+  const fmt = new Intl.DateTimeFormat("en-CA", {
+    timeZone: TIME_ZONE,
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
     hour: "2-digit",
     minute: "2-digit",
-    second: "2-digit",
+    hour12: false,
   });
 
-  const parts = dtf.formatToParts(date);
-  const map = Object.fromEntries(parts.filter((p) => p.type !== "literal").map((p) => [p.type, p.value]));
+  function partsFor(ms: number) {
+    const parts = fmt.formatToParts(new Date(ms));
+    return {
+      y: parseInt(parts.find((p) => p.type === "year")?.value ?? "1970", 10),
+      m: parseInt(parts.find((p) => p.type === "month")?.value ?? "01", 10),
+      d: parseInt(parts.find((p) => p.type === "day")?.value ?? "01", 10),
+      hh: parseInt(parts.find((p) => p.type === "hour")?.value ?? "00", 10),
+      mm: parseInt(parts.find((p) => p.type === "minute")?.value ?? "00", 10),
+    };
+  }
 
-  const asUtc = Date.UTC(
-    Number(map.year),
-    Number(map.month) - 1,
-    Number(map.day),
-    Number(map.hour),
-    Number(map.minute),
-    Number(map.second),
-  );
+  function cmp(a: ReturnType<typeof partsFor>) {
+    const A = [a.y, a.m, a.d, a.hh, a.mm];
+    const B = [target.y, target.m, target.d, target.hh, target.mm];
+    for (let i = 0; i < A.length; i++) {
+      if (A[i] < B[i]) return -1;
+      if (A[i] > B[i]) return 1;
+    }
+    return 0;
+  }
 
-  return (asUtc - date.getTime()) / 60000;
-}
+  for (let i = 0; i < 36; i++) {
+    const mid = Math.floor((lo + hi) / 2);
+    const p = partsFor(mid);
+    const c = cmp(p);
+    if (c === 0) {
+      return new Date(mid).toISOString();
+    }
+    if (c < 0) lo = mid + 30 * 1000;
+    else hi = mid - 30 * 1000;
+  }
 
-function toUtcIsoFromDatetimeLocalInTz(timeZone: string, value: string): string {
-  // value: "YYYY-MM-DDTHH:mm"
-  const [d, t] = value.split("T");
-  const [y, m, day] = d.split("-").map((x) => Number(x));
-  const [hh, mm] = t.split(":").map((x) => Number(x));
-
-  const assumedUtcMs = Date.UTC(y, m - 1, day, hh, mm, 0);
-  const offsetMin = getTimeZoneOffsetMinutes(timeZone, new Date(assumedUtcMs));
-  const realUtcMs = assumedUtcMs - offsetMin * 60_000;
-
-  return new Date(realUtcMs).toISOString();
-}
-
-function nextYmd(ymd: string): string {
-  const [y, m, d] = ymd.split("-").map((x) => Number(x));
-  const dt = new Date(Date.UTC(y, m - 1, d));
-  dt.setUTCDate(dt.getUTCDate() + 1);
-  return `${dt.getUTCFullYear()}-${pad2(dt.getUTCMonth() + 1)}-${pad2(dt.getUTCDate())}`;
-}
-
-function dayRangeUtc(ymd: string) {
-  const startLocal = `${ymd}T00:00`;
-  const endLocal = `${nextYmd(ymd)}T00:00`;
-  return {
-    startIso: toUtcIsoFromDatetimeLocalInTz(TIME_ZONE, startLocal),
-    endIso: toUtcIsoFromDatetimeLocalInTz(TIME_ZONE, endLocal),
-  };
-}
-
-function fmtTime(iso: string) {
-  return new Intl.DateTimeFormat("ro-RO", {
-    timeZone: TIME_ZONE,
-    hour: "2-digit",
-    minute: "2-digit",
-  }).format(new Date(iso));
+  // fallback (should rarely happen)
+  return new Date(Date.UTC(y, m - 1, d, hh, mm)).toISOString();
 }
 
 function vehicleLabel(v: Vehicle) {
   const core = [v.make, v.model].filter(Boolean).join(" ");
   const plate = v.plate ? ` • ${v.plate}` : "";
   const year = v.year ? ` • ${v.year}` : "";
-  const name = core || "Vehicul";
-  return `${name}${year}${plate}`;
+  return `${core || "Vehicul"}${year}${plate}`;
+}
+
+function fmtDateTime(iso: string) {
+  return new Intl.DateTimeFormat("ro-RO", {
+    timeZone: TIME_ZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(iso));
 }
 
 export default function CalendarPage() {
-  const [orgId, setOrgId] = useState<string | null>(null);
+  const nav = useNavigate();
 
-  const [selectedYmd, setSelectedYmd] = useState<string>(() => ymdInTimeZone(new Date()));
+  const [orgId, setOrgId] = useState<string | null>(null);
   const [customers, setCustomers] = useState<Customer[]>([]);
+  const [vehicles, setVehicles] = useState<Vehicle[]>([]);
+
   const [appointments, setAppointments] = useState<AppointmentRow[]>([]);
+  const [range, setRange] = useState<{ startIso: string; endIso: string } | null>(null);
+
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  // Modal state
-  const [open, setOpen] = useState(false);
-  const [saving, setSaving] = useState(false);
-
-  const [customerMode, setCustomerMode] = useState<"existing" | "new">("existing");
+  // Create modal
+  const [openCreate, setOpenCreate] = useState(false);
   const [customerId, setCustomerId] = useState<string>("");
-  const [customerName, setCustomerName] = useState("");
-  const [customerPhone, setCustomerPhone] = useState("");
-  const [customerEmail, setCustomerEmail] = useState("");
-
-  const [vehicles, setVehicles] = useState<Vehicle[]>([]);
-  const [vehicleMode, setVehicleMode] = useState<"existing" | "new">("existing");
   const [vehicleId, setVehicleId] = useState<string>("");
-  const [make, setMake] = useState("");
-  const [model, setModel] = useState("");
-  const [year, setYear] = useState<string>("");
-  const [plate, setPlate] = useState("");
-
   const [serviceTitle, setServiceTitle] = useState("");
-  const [startAtLocal, setStartAtLocal] = useState<string>(() => `${ymdInTimeZone(new Date())}T09:00`);
-  const [estimatedMinutes, setEstimatedMinutes] = useState<string>("60");
+  const [estimatedMinutes, setEstimatedMinutes] = useState("60");
+  const [startAtLocal, setStartAtLocal] = useState("");
   const [status, setStatus] = useState<AppointmentStatus>("new");
   const [notes, setNotes] = useState("");
+  const [saving, setSaving] = useState(false);
 
-  const range = useMemo(() => dayRangeUtc(selectedYmd), [selectedYmd]);
+  // Details modal
+  const [openDetails, setOpenDetails] = useState(false);
+  const [selected, setSelected] = useState<AppointmentRow | null>(null);
 
-  const stats = useMemo(() => {
-    const total = appointments.length;
-    const by: Record<AppointmentStatus, number> = {
-      new: 0,
-      confirmed: 0,
-      in_progress: 0,
-      done: 0,
-      cancelled: 0,
-      no_show: 0,
-    };
-    for (const a of appointments) by[a.status] += 1;
-    return { total, by };
-  }, [appointments]);
+  const [dServiceTitle, setDServiceTitle] = useState("");
+  const [dEstimatedMinutes, setDEstimatedMinutes] = useState("60");
+  const [dStartAtLocal, setDStartAtLocal] = useState("");
+  const [dStatus, setDStatus] = useState<AppointmentStatus>("new");
+  const [dNotes, setDNotes] = useState("");
+  const [savingDetails, setSavingDetails] = useState(false);
 
   useEffect(() => {
     (async () => {
       try {
         const p = await getMyProfile();
         setOrgId(p.org_id);
+
+        const list = await listCustomers();
+        setCustomers(list);
       } catch (e) {
-        setErr(e instanceof Error ? e.message : "Eroare la încărcarea profilului");
+        setErr(e instanceof Error ? e.message : "Eroare la inițializare");
       }
     })();
   }, []);
 
   useEffect(() => {
+    if (!customerId) {
+      setVehicles([]);
+      setVehicleId("");
+      return;
+    }
+
     (async () => {
       try {
-        const list = await listCustomers();
-        setCustomers(list);
+        const list = await listVehiclesByCustomer(customerId);
+        setVehicles(list);
+        if (list.length && !vehicleId) setVehicleId(list[0].id);
       } catch (e) {
-        setErr(e instanceof Error ? e.message : "Eroare la încărcarea clienților");
+        setErr(e instanceof Error ? e.message : "Eroare la încărcarea vehiculelor");
       }
     })();
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [customerId]);
 
-  async function refreshAppointments() {
+  async function refresh() {
+    if (!range) return;
     setErr(null);
     setLoading(true);
     try {
@@ -200,126 +242,74 @@ export default function CalendarPage() {
 
   useEffect(() => {
     if (!orgId) return;
-    void refreshAppointments();
+    if (!range) return;
+    void refresh();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [orgId, range.startIso, range.endIso]);
+  }, [orgId, range?.startIso, range?.endIso]);
 
-  useEffect(() => {
-    if (customerMode !== "existing") {
-      setVehicles([]);
-      setVehicleId("");
-      setVehicleMode("new");
-      return;
-    }
-    if (!customerId) {
-      setVehicles([]);
-      setVehicleId("");
-      return;
-    }
+  const todayYmd = ymdInTimeZone(new Date(), TIME_ZONE);
 
-    (async () => {
-      try {
-        const list = await listVehiclesByCustomer(customerId);
-        setVehicles(list);
-      } catch (e) {
-        setErr(e instanceof Error ? e.message : "Eroare la încărcarea vehiculelor");
-      }
-    })();
-  }, [customerId, customerMode]);
+  const todayList = useMemo(() => {
+    return appointments.filter((a) => ymdInTimeZone(new Date(a.start_at), TIME_ZONE) === todayYmd);
+  }, [appointments, todayYmd]);
 
-  function resetModalDefaults() {
-    setCustomerMode("existing");
-    setCustomerId("");
-    setCustomerName("");
-    setCustomerPhone("");
-    setCustomerEmail("");
+  const events = useMemo(() => {
+    return appointments.map((a) => {
+      const start = new Date(a.start_at);
+      const end = new Date(start.getTime() + Math.max(0, a.estimated_minutes) * 60_000);
 
-    setVehicles([]);
-    setVehicleMode("existing");
+      return {
+        id: a.id,
+        title: `${a.customer.name} — ${a.service_title}`,
+        start: a.start_at,
+        end: end.toISOString(),
+        extendedProps: { appointment: a },
+      };
+    });
+  }, [appointments]);
+
+  function openCreateWithStart(date: Date) {
+    setCustomerId(customers[0]?.id ?? "");
     setVehicleId("");
-    setMake("");
-    setModel("");
-    setYear("");
-    setPlate("");
-
     setServiceTitle("");
-    setStartAtLocal(`${selectedYmd}T09:00`);
     setEstimatedMinutes("60");
+    setStartAtLocal(toDatetimeLocalValueInTz(date.toISOString()));
     setStatus("new");
     setNotes("");
+    setOpenCreate(true);
   }
 
-  function openNewAppointment() {
-    resetModalDefaults();
-    setOpen(true);
-  }
-
-  async function onCreateAppointment() {
-    if (!orgId) {
-      setErr("Org ID lipsă (profile).");
-      return;
-    }
-
+  async function onCreate() {
+    if (!orgId) return;
     setErr(null);
     setSaving(true);
 
     try {
-      let finalCustomerId = customerId;
+      if (!customerId) throw new Error("Selectează un client.");
+      if (!vehicleId) throw new Error("Selectează un vehicul.");
+      const st = serviceTitle.trim();
+      if (!st) throw new Error("Serviciu obligatoriu.");
 
-      if (customerMode === "new") {
-        if (!customerName.trim()) throw new Error("Nume client obligatoriu.");
-        const c = await createCustomer({
-          orgId,
-          name: customerName.trim(),
-          phone: customerPhone,
-          email: customerEmail,
-        });
-        finalCustomerId = c.id;
-
-        const updated = await listCustomers();
-        setCustomers(updated);
-      } else {
-        if (!finalCustomerId) throw new Error("Selectează un client.");
-      }
-
-      let finalVehicleId = vehicleId;
-
-      if (vehicleMode === "new") {
-        const maybeYear = year.trim() ? Number(year.trim()) : undefined;
-        if (year.trim() && Number.isNaN(maybeYear)) throw new Error("An vehicul invalid.");
-
-        const v = await createVehicle({
-          orgId,
-          customerId: finalCustomerId,
-          make,
-          model,
-          year: maybeYear,
-          plate,
-        });
-        finalVehicleId = v.id;
-      } else {
-        if (!finalVehicleId) throw new Error("Selectează un vehicul.");
-      }
-
-      if (!serviceTitle.trim()) throw new Error("Serviciu obligatoriu.");
       const mins = Number(estimatedMinutes);
       if (!Number.isFinite(mins) || mins <= 0) throw new Error("Durată invalidă.");
 
-      const startIso = toUtcIsoFromDatetimeLocalInTz(TIME_ZONE, startAtLocal);
+      if (!startAtLocal) throw new Error("Data/ora este obligatorie.");
+
+      const startAtIso = tzLocalInputToUtcIso(startAtLocal);
 
       await createAppointment({
         orgId,
-        customerId: finalCustomerId,
-        vehicleId: finalVehicleId,
-        serviceTitle: serviceTitle.trim(),
+        customerId,
+        vehicleId,
+        serviceTitle: st,
         estimatedMinutes: mins,
-        startAtIso: startIso,
+        startAtIso,
         status,
         notes,
       });
 
-      setOpen(false);
-      await refreshAppointments();
+      setOpenCreate(false);
+      await refresh();
     } catch (e) {
       setErr(e instanceof Error ? e.message : "Eroare la salvare");
     } finally {
@@ -327,13 +317,119 @@ export default function CalendarPage() {
     }
   }
 
-  async function onChangeStatus(id: string, next: AppointmentStatus) {
+  function onDatesSet(arg: DatesSetArg) {
+    setRange({ startIso: arg.start.toISOString(), endIso: arg.end.toISOString() });
+  }
+
+  function onSelect(arg: DateSelectArg) {
+    openCreateWithStart(arg.start);
+  }
+
+  function onEventClick(arg: EventClickArg) {
+    const appt = (arg.event.extendedProps as any)?.appointment as AppointmentRow | undefined;
+    if (!appt) return;
+
+    setSelected(appt);
+    setDServiceTitle(appt.service_title);
+    setDEstimatedMinutes(String(appt.estimated_minutes ?? 60));
+    setDStartAtLocal(toDatetimeLocalValueInTz(appt.start_at));
+    setDStatus(appt.status);
+    setDNotes(appt.notes ?? "");
+    setOpenDetails(true);
+  }
+
+  async function onEventDrop(arg: EventDropArg) {
+    try {
+      const id = arg.event.id;
+      const start = arg.event.start;
+      if (!start) return;
+
+      const end = arg.event.end;
+      const minutes = end ? Math.max(5, Math.round((end.getTime() - start.getTime()) / 60_000)) : undefined;
+
+      await updateAppointmentSchedule(id, {
+        start_at: start.toISOString(),
+        ...(minutes != null ? { estimated_minutes: minutes } : null),
+      });
+
+      await refresh();
+    } catch (e) {
+      arg.revert();
+      setErr(e instanceof Error ? e.message : "Eroare la mutarea programării");
+    }
+  }
+
+  async function onEventResize(arg: EventResizeDoneArg) {
+    try {
+      const id = arg.event.id;
+      const start = arg.event.start;
+      const end = arg.event.end;
+      if (!start || !end) return;
+
+      const minutes = Math.max(5, Math.round((end.getTime() - start.getTime()) / 60_000));
+
+      await updateAppointmentSchedule(id, {
+        start_at: start.toISOString(),
+        estimated_minutes: minutes,
+      });
+
+      await refresh();
+    } catch (e) {
+      arg.revert();
+      setErr(e instanceof Error ? e.message : "Eroare la redimensionare");
+    }
+  }
+
+  async function onSaveDetails() {
+    if (!selected) return;
+    setErr(null);
+    setSavingDetails(true);
+
+    try {
+      const st = dServiceTitle.trim();
+      if (!st) throw new Error("Serviciu obligatoriu.");
+
+      const mins = Number(dEstimatedMinutes);
+      if (!Number.isFinite(mins) || mins <= 0) throw new Error("Durată invalidă.");
+
+      if (!dStartAtLocal) throw new Error("Data/ora este obligatorie.");
+
+      const startAtIso = tzLocalInputToUtcIso(dStartAtLocal);
+
+      await updateAppointmentSchedule(selected.id, {
+        service_title: st,
+        estimated_minutes: mins,
+        start_at: startAtIso,
+        notes: dNotes.trim() || null,
+      });
+
+      if (dStatus !== selected.status) {
+        await updateAppointmentStatus(selected.id, dStatus);
+      }
+
+      setOpenDetails(false);
+      setSelected(null);
+      await refresh();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Eroare la salvare");
+    } finally {
+      setSavingDetails(false);
+    }
+  }
+
+  async function onDeleteSelected() {
+    if (!selected) return;
+    const ok = confirm("Ștergi programarea? Acțiunea este ireversibilă.");
+    if (!ok) return;
+
     setErr(null);
     try {
-      await updateAppointmentStatus(id, next);
-      await refreshAppointments();
+      await deleteAppointment(selected.id);
+      setOpenDetails(false);
+      setSelected(null);
+      await refresh();
     } catch (e) {
-      setErr(e instanceof Error ? e.message : "Eroare la update status");
+      setErr(e instanceof Error ? e.message : "Eroare la ștergere");
     }
   }
 
@@ -342,18 +438,20 @@ export default function CalendarPage() {
       <div className="page-header">
         <div>
           <div className="h1">Programări</div>
-          <div className="muted">Timezone: {TIME_ZONE}</div>
+          <div className="muted">
+            Calendar zi/săptămână/lună + drag &amp; drop (timezone: {TIME_ZONE})
+          </div>
         </div>
 
         <div className="row">
-          <input
-            className="input"
-            style={{ width: 180 }}
-            type="date"
-            value={selectedYmd}
-            onChange={(e) => setSelectedYmd(e.target.value)}
-          />
-          <button className="btn primary" onClick={openNewAppointment}>
+          <button className="btn" onClick={() => void refresh()} disabled={loading || !range}>
+            {loading ? "Se încarcă…" : "Refresh"}
+          </button>
+          <button
+            className="btn primary"
+            onClick={() => openCreateWithStart(new Date())}
+            disabled={!orgId || customers.length === 0}
+          >
             + Programare
           </button>
         </div>
@@ -365,208 +463,164 @@ export default function CalendarPage() {
         </div>
       )}
 
-      <div className="grid2">
+      <div className="calendar-wrap">
         <div className="card card-pad">
-          <div className="row" style={{ justifyContent: "space-between", marginBottom: 8 }}>
-            <div style={{ fontWeight: 900 }}>Lista zilei ({selectedYmd})</div>
-            <div className="muted">{loading ? "Se încarcă…" : `${appointments.length} programări`}</div>
-          </div>
-
-          <table className="table">
-            <thead>
-              <tr>
-                <th>Ora</th>
-                <th>Client</th>
-                <th>Mașină</th>
-                <th>Serviciu</th>
-                <th>Status</th>
-              </tr>
-            </thead>
-            <tbody>
-              {appointments.map((a) => (
-                <tr key={a.id}>
-                  <td style={{ fontWeight: 900 }}>{fmtTime(a.start_at)}</td>
-                  <td>
-                    <div style={{ fontWeight: 850 }}>{a.customer.name}</div>
-                    <div className="muted">{a.customer.phone || a.customer.email || ""}</div>
-                  </td>
-                  <td>{vehicleLabel(a.vehicle)}</td>
-                  <td>
-                    <div style={{ fontWeight: 850 }}>{a.service_title}</div>
-                    <div className="muted">{a.estimated_minutes} min</div>
-                  </td>
-                  <td>
-                    <div className="row">
-                      <span className="badge">{STATUS_LABEL[a.status]}</span>
-                      <select
-                        className="select"
-                        style={{ width: 160 }}
-                        value={a.status}
-                        onChange={(e) => onChangeStatus(a.id, e.target.value as AppointmentStatus)}
-                      >
-                        {Object.keys(STATUS_LABEL).map((k) => (
-                          <option key={k} value={k}>
-                            {STATUS_LABEL[k as AppointmentStatus]}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-
-              {!loading && appointments.length === 0 && (
-                <tr>
-                  <td colSpan={5} className="muted">
-                    Nicio programare pentru ziua selectată.
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
+          <FullCalendar
+            plugins={[dayGridPlugin, timeGridPlugin, interactionPlugin, listPlugin]}
+            initialView="timeGridWeek"
+            selectable
+            editable
+            timeZone={TIME_ZONE}
+            height="auto"
+            headerToolbar={{
+              left: "prev,next today",
+              center: "title",
+              right: "dayGridMonth,timeGridWeek,timeGridDay,listWeek",
+            }}
+            events={events as any}
+            datesSet={onDatesSet}
+            select={onSelect}
+            eventClick={onEventClick}
+            eventDrop={onEventDrop}
+            eventResize={onEventResize}
+            eventResizableFromStart
+            nowIndicator
+            slotMinTime="07:00:00"
+            slotMaxTime="21:00:00"
+            locale="ro"
+          />
         </div>
 
         <div className="card card-pad">
-          <div style={{ fontWeight: 950, marginBottom: 8 }}>Astăzi — sumar</div>
-          <div className="muted" style={{ marginBottom: 12 }}>
-            Total: <b>{stats.total}</b>
-          </div>
+          <div style={{ fontWeight: 950, marginBottom: 10 }}>Astăzi ({todayYmd})</div>
 
           <div style={{ display: "grid", gap: 8 }}>
-            {(
-              ["new", "confirmed", "in_progress", "done", "cancelled", "no_show"] as AppointmentStatus[]
-            ).map((s) => (
-              <div key={s} className="row" style={{ justifyContent: "space-between" }}>
-                <span className="badge">{STATUS_LABEL[s]}</span>
-                <span style={{ fontWeight: 950 }}>{stats.by[s]}</span>
-              </div>
+            {todayList.map((a) => (
+              <button
+                key={a.id}
+                className="btn"
+                style={{ width: "100%", textAlign: "left" }}
+                onClick={() => {
+                  setSelected(a);
+                  setDServiceTitle(a.service_title);
+                  setDEstimatedMinutes(String(a.estimated_minutes ?? 60));
+                  setDStartAtLocal(toDatetimeLocalValueInTz(a.start_at));
+                  setDStatus(a.status);
+                  setDNotes(a.notes ?? "");
+                  setOpenDetails(true);
+                }}
+              >
+                <div style={{ fontWeight: 900 }}>{a.customer.name}</div>
+                <div className="muted">
+                  {fmtDateTime(a.start_at)} • {vehicleLabel(a.vehicle)}
+                </div>
+                <div className="muted">{a.service_title}</div>
+                <div style={{ marginTop: 6 }}>
+                  <span className="badge">{STATUS_LABEL[a.status]}</span>
+                </div>
+              </button>
             ))}
+
+            {!loading && todayList.length === 0 && (
+              <div className="muted">Nicio programare azi (în range-ul încărcat).</div>
+            )}
+          </div>
+
+          <div style={{ marginTop: 12 }} className="muted">
+            Tip: Poți trage programările în calendar (drag &amp; drop) sau le poți
+            redimensiona ca să schimbi durata.
           </div>
         </div>
       </div>
 
-      <Modal open={open} title="Programare nouă" onClose={() => setOpen(false)}>
+      {/* Create */}
+      <Modal open={openCreate} title="Programare nouă" onClose={() => setOpenCreate(false)}>
         <div style={{ display: "grid", gap: 10 }}>
           <div className="grid2">
             <div>
-              <div className="muted" style={{ marginBottom: 6 }}>Client</div>
-
-              <div className="row" style={{ marginBottom: 8 }}>
-                <button
-                  className={`btn ${customerMode === "existing" ? "primary" : ""}`}
-                  type="button"
-                  onClick={() => setCustomerMode("existing")}
-                >
-                  Existent
-                </button>
-                <button
-                  className={`btn ${customerMode === "new" ? "primary" : ""}`}
-                  type="button"
-                  onClick={() => setCustomerMode("new")}
-                >
-                  Nou
-                </button>
+              <div className="muted" style={{ marginBottom: 6 }}>
+                Client
               </div>
-
-              {customerMode === "existing" ? (
-                <select
-                  className="select"
-                  value={customerId}
-                  onChange={(e) => setCustomerId(e.target.value)}
-                >
-                  <option value="">Selectează client…</option>
-                  {customers.map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.name} {c.phone ? `(${c.phone})` : ""}
-                    </option>
-                  ))}
-                </select>
-              ) : (
-                <div style={{ display: "grid", gap: 8 }}>
-                  <input className="input" placeholder="Nume client *" value={customerName} onChange={(e) => setCustomerName(e.target.value)} />
-                  <input className="input" placeholder="Telefon" value={customerPhone} onChange={(e) => setCustomerPhone(e.target.value)} />
-                  <input className="input" placeholder="Email" value={customerEmail} onChange={(e) => setCustomerEmail(e.target.value)} />
-                </div>
-              )}
+              <select
+                className="select"
+                value={customerId}
+                onChange={(e) => setCustomerId(e.target.value)}
+              >
+                <option value="">— alege —</option>
+                {customers.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name}
+                  </option>
+                ))}
+              </select>
             </div>
 
             <div>
-              <div className="muted" style={{ marginBottom: 6 }}>Vehicul</div>
-
-              <div className="row" style={{ marginBottom: 8 }}>
-                <button
-                  className={`btn ${vehicleMode === "existing" ? "primary" : ""}`}
-                  type="button"
-                  onClick={() => setVehicleMode("existing")}
-                  disabled={customerMode === "new"}
-                >
-                  Existent
-                </button>
-                <button
-                  className={`btn ${vehicleMode === "new" ? "primary" : ""}`}
-                  type="button"
-                  onClick={() => setVehicleMode("new")}
-                >
-                  Nou
-                </button>
+              <div className="muted" style={{ marginBottom: 6 }}>
+                Vehicul
               </div>
-
-              {vehicleMode === "existing" && customerMode !== "new" ? (
-                <select className="select" value={vehicleId} onChange={(e) => setVehicleId(e.target.value)}>
-                  <option value="">Selectează vehicul…</option>
-                  {vehicles.map((v) => (
-                    <option key={v.id} value={v.id}>
-                      {vehicleLabel(v)}
-                    </option>
-                  ))}
-                </select>
-              ) : (
-                <div style={{ display: "grid", gap: 8 }}>
-                  <div className="grid2">
-                    <input className="input" placeholder="Marca" value={make} onChange={(e) => setMake(e.target.value)} />
-                    <input className="input" placeholder="Model" value={model} onChange={(e) => setModel(e.target.value)} />
-                  </div>
-                  <div className="grid2">
-                    <input className="input" placeholder="An" value={year} onChange={(e) => setYear(e.target.value)} />
-                    <input className="input" placeholder="Număr (ex: B-123-ABC)" value={plate} onChange={(e) => setPlate(e.target.value)} />
-                  </div>
-                </div>
-              )}
+              <select
+                className="select"
+                value={vehicleId}
+                onChange={(e) => setVehicleId(e.target.value)}
+                disabled={!customerId}
+              >
+                <option value="">— alege —</option>
+                {vehicles.map((v) => (
+                  <option key={v.id} value={v.id}>
+                    {vehicleLabel(v)}
+                  </option>
+                ))}
+              </select>
             </div>
           </div>
 
           <div className="grid2">
             <div>
-              <div className="muted" style={{ marginBottom: 6 }}>Serviciu *</div>
-              <input className="input" placeholder="Ex: Schimb ulei + filtre" value={serviceTitle} onChange={(e) => setServiceTitle(e.target.value)} />
-            </div>
-
-            <div className="grid2">
-              <div>
-                <div className="muted" style={{ marginBottom: 6 }}>Dată/Oră (România)</div>
-                <input
-                  className="input"
-                  type="datetime-local"
-                  value={startAtLocal}
-                  onChange={(e) => setStartAtLocal(e.target.value)}
-                />
+              <div className="muted" style={{ marginBottom: 6 }}>
+                Data / ora (RO)
               </div>
-
-              <div>
-                <div className="muted" style={{ marginBottom: 6 }}>Durată (min)</div>
-                <input
-                  className="input"
-                  value={estimatedMinutes}
-                  onChange={(e) => setEstimatedMinutes(e.target.value)}
-                />
-              </div>
+              <input
+                type="datetime-local"
+                className="input"
+                value={startAtLocal}
+                onChange={(e) => setStartAtLocal(e.target.value)}
+              />
             </div>
+            <div>
+              <div className="muted" style={{ marginBottom: 6 }}>
+                Durată (min)
+              </div>
+              <input
+                className="input"
+                value={estimatedMinutes}
+                onChange={(e) => setEstimatedMinutes(e.target.value)}
+              />
+            </div>
+          </div>
+
+          <div>
+            <div className="muted" style={{ marginBottom: 6 }}>
+              Serviciu
+            </div>
+            <input
+              className="input"
+              value={serviceTitle}
+              onChange={(e) => setServiceTitle(e.target.value)}
+              placeholder="Ex: Schimb ulei + filtre"
+            />
           </div>
 
           <div className="grid2">
             <div>
-              <div className="muted" style={{ marginBottom: 6 }}>Status</div>
-              <select className="select" value={status} onChange={(e) => setStatus(e.target.value as AppointmentStatus)}>
+              <div className="muted" style={{ marginBottom: 6 }}>
+                Status
+              </div>
+              <select
+                className="select"
+                value={status}
+                onChange={(e) => setStatus(e.target.value as AppointmentStatus)}
+              >
                 {Object.keys(STATUS_LABEL).map((k) => (
                   <option key={k} value={k}>
                     {STATUS_LABEL[k as AppointmentStatus]}
@@ -574,22 +628,135 @@ export default function CalendarPage() {
                 ))}
               </select>
             </div>
+            <div />
+          </div>
 
-            <div>
-              <div className="muted" style={{ marginBottom: 6 }}>Notițe</div>
-              <input className="input" placeholder="(opțional)" value={notes} onChange={(e) => setNotes(e.target.value)} />
+          <div>
+            <div className="muted" style={{ marginBottom: 6 }}>
+              Note (opțional)
             </div>
+            <textarea
+              className="textarea"
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              placeholder="Detalii (piese aduse, simptome, etc.)"
+            />
           </div>
 
           <div className="row" style={{ justifyContent: "flex-end" }}>
-            <button className="btn" type="button" onClick={() => setOpen(false)} disabled={saving}>
+            <button className="btn" onClick={() => setOpenCreate(false)}>
               Anulează
             </button>
-            <button className="btn primary" type="button" onClick={onCreateAppointment} disabled={saving}>
+            <button className="btn primary" onClick={() => void onCreate()} disabled={saving}>
               {saving ? "Se salvează…" : "Salvează"}
             </button>
           </div>
         </div>
+      </Modal>
+
+      {/* Details */}
+      <Modal
+        open={openDetails}
+        title={selected ? `Programare • ${selected.customer.name}` : "Programare"}
+        onClose={() => setOpenDetails(false)}
+      >
+        {!selected ? (
+          <div className="muted">Nicio programare selectată.</div>
+        ) : (
+          <div style={{ display: "grid", gap: 10 }}>
+            <div className="grid2">
+              <div>
+                <div className="muted" style={{ marginBottom: 6 }}>
+                  Data / ora (RO)
+                </div>
+                <input
+                  type="datetime-local"
+                  className="input"
+                  value={dStartAtLocal}
+                  onChange={(e) => setDStartAtLocal(e.target.value)}
+                />
+              </div>
+              <div>
+                <div className="muted" style={{ marginBottom: 6 }}>
+                  Durată (min)
+                </div>
+                <input
+                  className="input"
+                  value={dEstimatedMinutes}
+                  onChange={(e) => setDEstimatedMinutes(e.target.value)}
+                />
+              </div>
+            </div>
+
+            <div>
+              <div className="muted" style={{ marginBottom: 6 }}>
+                Serviciu
+              </div>
+              <input
+                className="input"
+                value={dServiceTitle}
+                onChange={(e) => setDServiceTitle(e.target.value)}
+              />
+            </div>
+
+            <div className="grid2">
+              <div>
+                <div className="muted" style={{ marginBottom: 6 }}>
+                  Status
+                </div>
+                <select
+                  className="select"
+                  value={dStatus}
+                  onChange={(e) => setDStatus(e.target.value as AppointmentStatus)}
+                >
+                  {Object.keys(STATUS_LABEL).map((k) => (
+                    <option key={k} value={k}>
+                      {STATUS_LABEL[k as AppointmentStatus]}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <div className="muted" style={{ marginBottom: 6 }}>
+                  Client / vehicul
+                </div>
+                <div style={{ fontWeight: 900 }}>{selected.customer.name}</div>
+                <div className="muted">{vehicleLabel(selected.vehicle)}</div>
+              </div>
+            </div>
+
+            <div>
+              <div className="muted" style={{ marginBottom: 6 }}>
+                Note
+              </div>
+              <textarea
+                className="textarea"
+                value={dNotes}
+                onChange={(e) => setDNotes(e.target.value)}
+              />
+            </div>
+
+            <div className="row" style={{ justifyContent: "space-between" }}>
+              <div className="row">
+                <button className="btn" onClick={() => nav(`/jobs?fromAppointment=${selected.id}`)}>
+                  Creează lucrare
+                </button>
+                <button className="btn" onClick={() => void onDeleteSelected()}>
+                  Șterge
+                </button>
+              </div>
+
+              <div className="row">
+                <button className="btn" onClick={() => setOpenDetails(false)}>
+                  Închide
+                </button>
+                <button className="btn primary" onClick={() => void onSaveDetails()} disabled={savingDetails}>
+                  {savingDetails ? "Se salvează…" : "Salvează"}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </Modal>
     </div>
   );

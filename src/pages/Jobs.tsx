@@ -1,8 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "react-router-dom";
+import { jsPDF } from "jspdf";
+import autoTable from "jspdf-autotable";
 import Modal from "../components/Modal";
+import { supabase } from "../lib/supabase";
 import {
   AppointmentRow,
   Customer,
+  JobAttachmentRow,
   JobItemRow,
   JobItemType,
   JobProgressStatus,
@@ -11,13 +16,16 @@ import {
   Vehicle,
   createCustomer,
   createJob,
+  createJobAttachmentRecord,
   createJobItem,
   createVehicle,
   deleteJobItem,
+  deleteJobAttachmentRecord,
   getMyProfile,
   getOrgSettings,
   listAppointmentsRecent,
   listCustomers,
+  listJobAttachments,
   listJobItems,
   listJobsRecent,
   listOperationsActive,
@@ -27,6 +35,7 @@ import {
 } from "../lib/db";
 
 const TIME_ZONE = "Europe/Bucharest";
+const ATT_BUCKET = "bilstar-job-attachments";
 
 const PROGRESS_LABEL: Record<JobProgressStatus, string> = {
   not_started: "Neînceput",
@@ -79,6 +88,7 @@ function calcTotals(items: JobItemRow[], laborRatePerHour: number) {
 }
 
 export default function JobsPage() {
+  const [searchParams, setSearchParams] = useSearchParams();
   const [orgId, setOrgId] = useState<string | null>(null);
   const [laborRate, setLaborRate] = useState<number>(0);
 
@@ -95,6 +105,13 @@ export default function JobsPage() {
   const [items, setItems] = useState<JobItemRow[]>([]);
   const [loadingJobs, setLoadingJobs] = useState(false);
   const [loadingItems, setLoadingItems] = useState(false);
+
+  // Attachments
+  const [attachments, setAttachments] = useState<JobAttachmentRow[]>([]);
+  const [loadingAttachments, setLoadingAttachments] = useState(false);
+  const [uploadingAttachments, setUploadingAttachments] = useState(false);
+  const [signedUrlByPath, setSignedUrlByPath] = useState<Record<string, string>>({});
+
   const [err, setErr] = useState<string | null>(null);
 
   // Create Job modal
@@ -186,9 +203,48 @@ export default function JobsPage() {
     }
   }
 
+  async function loadAttachments(jobId: string) {
+    setErr(null);
+    setLoadingAttachments(true);
+    try {
+      const list = await listJobAttachments(jobId);
+      setAttachments(list);
+
+      // Best-effort: pre-generate signed URLs for thumbnails
+      const missing = list
+        .map((a) => a.storage_path)
+        .filter((p) => !signedUrlByPath[p]);
+
+      if (missing.length) {
+        const pairs = await Promise.all(
+          missing.slice(0, 18).map(async (path) => {
+            const { data, error } = await supabase.storage
+              .from(ATT_BUCKET)
+              .createSignedUrl(path, 60 * 60);
+            if (error || !data?.signedUrl) return [path, ""] as const;
+            return [path, data.signedUrl] as const;
+          }),
+        );
+
+        setSignedUrlByPath((prev) => {
+          const next = { ...prev };
+          for (const [p, url] of pairs) {
+            if (url) next[p] = url;
+          }
+          return next;
+        });
+      }
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Eroare la încărcarea atașamentelor");
+    } finally {
+      setLoadingAttachments(false);
+    }
+  }
+
   useEffect(() => {
     if (!selectedJobId) return;
     void loadItems(selectedJobId);
+    void loadAttachments(selectedJobId);
   }, [selectedJobId]);
 
   useEffect(() => {
@@ -243,17 +299,31 @@ export default function JobsPage() {
     setJobNotes("");
   }
 
-  async function openCreateModal() {
+  async function openCreateModal(prefillAppointmentId?: string) {
     resetCreateModal();
     setOpenCreate(true);
 
     try {
       const appts = await listAppointmentsRecent(14);
       setRecentAppointments(appts);
+      if (prefillAppointmentId) {
+        setCreateMode("appointment");
+        setAppointmentId(prefillAppointmentId);
+      }
     } catch {
       // ignore
     }
   }
+
+  // Open create-job modal from calendar (query param: ?fromAppointment=<id>)
+  useEffect(() => {
+    const apptId = searchParams.get("fromAppointment");
+    if (!apptId) return;
+    void openCreateModal(apptId);
+    // clear param
+    setSearchParams({}, { replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams]);
 
   useEffect(() => {
     if (createMode !== "appointment") return;
@@ -458,6 +528,137 @@ export default function JobsPage() {
   const discountNum = selectedJob ? (selectedJob.discount_value ?? 0) : 0;
   const grand = Math.max(0, totals.subtotal - discountNum);
 
+  async function onExportPdf() {
+    if (!selectedJob) return;
+
+    const doc = new jsPDF({ unit: "pt", format: "a4" });
+    const marginX = 40;
+    let y = 40;
+
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(16);
+    doc.text("Bilstar Service - Deviz", marginX, y);
+    y += 18;
+
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(11);
+    doc.text(`Client: ${selectedJob.customer.name}`, marginX, y);
+    y += 14;
+    doc.text(`Vehicul: ${vehicleLabel(selectedJob.vehicle)}`, marginX, y);
+    y += 14;
+    doc.text(`Stadiu: ${PROGRESS_LABEL[selectedJob.progress]}`, marginX, y);
+    y += 14;
+    doc.text(`Data: ${fmtDateTime(selectedJob.created_at)}`, marginX, y);
+    y += 12;
+
+    const body = items.map((it, idx) => {
+      const subtotal =
+        it.item_type === "labor"
+          ? (laborRate * ((it.norm_minutes ?? 0) * (it.qty || 1))) / 60
+          : (it.qty || 0) * (it.unit_price || 0);
+
+      return [
+        String(idx + 1),
+        it.item_type === "labor" ? "Manoperă" : it.item_type === "parts" ? "Piese" : "Altele",
+        it.title,
+        String(it.qty ?? 0),
+        it.item_type === "labor" ? `${it.norm_minutes ?? 0} min/op` : moneyRON(it.unit_price ?? 0),
+        moneyRON(subtotal),
+      ];
+    });
+
+    (autoTable as any)(doc, {
+      startY: y + 10,
+      head: [["#", "Tip", "Denumire", "Qty", "Preț", "Subtotal"]],
+      body,
+      styles: { font: "helvetica", fontSize: 9, cellPadding: 4 },
+      headStyles: { fillColor: [15, 23, 42] },
+      margin: { left: marginX, right: marginX },
+    });
+
+    const lastY = (doc as any).lastAutoTable?.finalY ?? (y + 10);
+    let y2 = lastY + 18;
+    const discount = selectedJob.discount_value ?? 0;
+    const grandTotal = Math.max(0, totals.subtotal - discount);
+
+    doc.setFont("helvetica", "bold");
+    doc.text(`Manoperă: ${moneyRON(totals.labor)}`, marginX, y2);
+    y2 += 14;
+    doc.text(`Piese: ${moneyRON(totals.parts)}`, marginX, y2);
+    y2 += 14;
+    doc.text(`Altele: ${moneyRON(totals.other)}`, marginX, y2);
+    y2 += 14;
+    doc.text(`Subtotal: ${moneyRON(totals.subtotal)}`, marginX, y2);
+    y2 += 14;
+    doc.text(`Discount: -${moneyRON(discount)}`, marginX, y2);
+    y2 += 18;
+    doc.setFontSize(13);
+    doc.text(`TOTAL: ${moneyRON(grandTotal)}`, marginX, y2);
+
+    if ((selectedJob.notes ?? "").trim()) {
+      doc.setFontSize(10);
+      doc.setFont("helvetica", "normal");
+      y2 += 22;
+      doc.text("Note:", marginX, y2);
+      y2 += 12;
+      const noteLines = doc.splitTextToSize(String(selectedJob.notes), 515);
+      doc.text(noteLines, marginX, y2);
+    }
+
+    const safeName = selectedJob.customer.name
+      .replace(/[^a-zA-Z0-9_\- ]/g, "")
+      .trim()
+      .replace(/\s+/g, "_")
+      .slice(0, 40);
+
+    doc.save(`bilstar_deviz_${safeName || "client"}_${selectedJob.id.slice(0, 6)}.pdf`);
+  }
+
+  async function onUploadAttachments(fileList: FileList | null) {
+    if (!orgId || !selectedJob) return;
+    const files = Array.from(fileList ?? []);
+    if (!files.length) return;
+
+    setErr(null);
+    setUploadingAttachments(true);
+
+    try {
+      for (const file of files) {
+        const extRaw = (file.name.split(".").pop() || "bin").toLowerCase();
+        const ext = /^[a-z0-9]{1,5}$/.test(extRaw) ? extRaw : "bin";
+        const path = `${orgId}/${selectedJob.id}/${crypto.randomUUID()}.${ext}`;
+
+        const { error: upErr } = await supabase.storage.from(ATT_BUCKET).upload(path, file, {
+          cacheControl: "3600",
+          upsert: false,
+          contentType: file.type || undefined,
+        });
+
+        if (upErr) throw upErr;
+        await createJobAttachmentRecord({ orgId, jobId: selectedJob.id, storagePath: path });
+      }
+
+      await loadAttachments(selectedJob.id);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Eroare la upload atașamente");
+    } finally {
+      setUploadingAttachments(false);
+    }
+  }
+
+  async function onDeleteAttachment(attachmentId: string) {
+    if (!selectedJob) return;
+    setErr(null);
+    try {
+      const row = await deleteJobAttachmentRecord(attachmentId);
+      // best-effort: remove file
+      await supabase.storage.from(ATT_BUCKET).remove([row.storage_path]);
+      await loadAttachments(selectedJob.id);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Eroare la ștergere atașament");
+    }
+  }
+
   return (
     <div>
       <div className="page-header">
@@ -569,7 +770,17 @@ export default function JobsPage() {
 
               <div className="card card-pad" style={{ boxShadow: "none" }}>
                 <div className="row" style={{ justifyContent: "space-between", marginBottom: 8 }}>
-                  <div style={{ fontWeight: 950 }}>Deviz</div>
+                  <div className="row" style={{ gap: 10 }}>
+                    <div style={{ fontWeight: 950 }}>Deviz</div>
+                    <button
+                      className="btn"
+                      onClick={() => void onExportPdf()}
+                      disabled={!selectedJob || loadingItems}
+                      title="Exportă devizul ca PDF"
+                    >
+                      Export PDF
+                    </button>
+                  </div>
                   <div className="muted">{loadingItems ? "Se încarcă…" : `${items.length} linii`}</div>
                 </div>
 
@@ -649,6 +860,55 @@ export default function JobsPage() {
                   </div>
                 </div>
               </div>
+
+              <div className="card card-pad" style={{ boxShadow: "none" }}>
+                <div className="row" style={{ justifyContent: "space-between", marginBottom: 8 }}>
+                  <div style={{ fontWeight: 950 }}>Atașamente</div>
+                  <div className="row" style={{ gap: 8 }}>
+                    <label className={`btn ${uploadingAttachments ? "primary" : ""}`} style={{ cursor: uploadingAttachments ? "not-allowed" : "pointer" }}>
+                      {uploadingAttachments ? "Se urcă…" : "+ Poze"}
+                      <input
+                        type="file"
+                        accept="image/*"
+                        multiple
+                        style={{ display: "none" }}
+                        disabled={uploadingAttachments}
+                        onChange={(e) => void onUploadAttachments(e.target.files)}
+                      />
+                    </label>
+                    <div className="muted">{loadingAttachments ? "Se încarcă…" : `${attachments.length} fișiere`}</div>
+                  </div>
+                </div>
+
+                {attachments.length === 0 ? (
+                  <div className="muted">Încarcă poze înainte/după, note, etc.</div>
+                ) : (
+                  <div className="attachments-grid">
+                    {attachments.map((a) => {
+                      const url = signedUrlByPath[a.storage_path];
+                      return (
+                        <div key={a.id} className="attachment-card">
+                          {url ? (
+                            <a href={url} target="_blank" rel="noreferrer">
+                              <img src={url} alt="attachment" />
+                            </a>
+                          ) : (
+                            <div className="muted" style={{ padding: 8 }}>Previzualizare indisponibilă</div>
+                          )}
+
+                          <div className="row" style={{ justifyContent: "space-between" }}>
+                            <span className="muted" style={{ fontSize: 12 }}>{fmtDateTime(a.created_at)}</span>
+                            <button className="btn" onClick={() => void onDeleteAttachment(a.id)}>
+                              Șterge
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
             </div>
           )}
         </div>

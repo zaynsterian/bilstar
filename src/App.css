@@ -196,3 +196,79 @@ body, input, button, select, textarea {
   font-weight: 800;
   background: rgba(15, 23, 42, 0.04);
 }
+
+/* ===== FullCalendar minor cosmetics ===== */
+.calendar-wrap {
+  display: grid;
+  grid-template-columns: 1fr 340px;
+  gap: 12px;
+}
+
+@media (max-width: 980px) {
+  .calendar-wrap { grid-template-columns: 1fr; }
+}
+
+.fc {
+  --fc-border-color: rgba(15, 23, 42, 0.12);
+  --fc-page-bg-color: transparent;
+  --fc-neutral-bg-color: rgba(15, 23, 42, 0.03);
+  --fc-today-bg-color: rgba(37, 99, 235, 0.06);
+}
+
+.fc .fc-toolbar-title {
+  font-size: 16px;
+  font-weight: 900;
+}
+
+.fc .fc-button {
+  border-radius: 12px;
+  border: 1px solid var(--border);
+}
+
+.fc .fc-button-primary {
+  background: rgba(37, 99, 235, 0.10);
+  border-color: rgba(37, 99, 235, 0.35);
+  color: var(--text);
+}
+
+.fc .fc-button-primary:not(:disabled).fc-button-active,
+.fc .fc-button-primary:not(:disabled):active {
+  background: rgba(37, 99, 235, 0.18);
+}
+
+.fc-event {
+  border-radius: 10px;
+}
+
+/* Attachments */
+.attach-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+}
+
+@media (max-width: 980px) {
+  .attach-grid { grid-template-columns: repeat(2, 1fr); }
+}
+
+.attach-card {
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  overflow: hidden;
+  background: rgba(15, 23, 42, 0.02);
+}
+
+.attach-thumb {
+  width: 100%;
+  height: 120px;
+  object-fit: cover;
+  display: block;
+  background: rgba(15, 23, 42, 0.06);
+}
+
+.attach-actions {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px;
+}
