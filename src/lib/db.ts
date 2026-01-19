@@ -40,12 +40,13 @@ export type AppointmentStatus =
 export type AppointmentRow = {
   id: string;
   service_title: string;
-  estimated_minutes: number;
+  estimated_minutes: number | null;
+  estimated_price: number | null;
   start_at: string;
   status: AppointmentStatus;
   notes: string | null;
-  customer: Customer;
-  vehicle: Vehicle;
+  customer: Customer | null;
+  vehicle: Vehicle | null;
 };
 
 export type Operation = {
@@ -157,13 +158,14 @@ function oneRequired<T>(value: T | T[] | null | undefined, label: string): T {
 }
 
 function toAppointmentRow(r: any): AppointmentRow {
-  const customer = oneRequired<Customer>(r.customer, "customer");
-  const vehicle = oneRequired<Vehicle>(r.vehicle, "vehicle");
+  const customer = one<Customer>(r.customer);
+  const vehicle = one<Vehicle>(r.vehicle);
 
   return {
     id: String(r.id),
     service_title: String(r.service_title ?? ""),
-    estimated_minutes: toNumber(r.estimated_minutes),
+    estimated_minutes: r.estimated_minutes == null ? null : toNumber(r.estimated_minutes),
+    estimated_price: r.estimated_price == null ? null : toNumber(r.estimated_price),
     start_at: String(r.start_at),
     status: r.status as AppointmentStatus,
     notes: (r.notes ?? null) as string | null,
@@ -312,7 +314,7 @@ export async function listAppointmentsBetween(
   const { data, error } = await supabase
     .from("appointments")
     .select(
-      "id, service_title, estimated_minutes, start_at, status, notes, customer:customers(id, name, phone, email), vehicle:vehicles(id, make, model, year, plate)",
+      "id, service_title, estimated_minutes, estimated_price, start_at, status, notes, customer:customers(id, name, phone, email), vehicle:vehicles(id, make, model, year, plate)",
     )
     .gte("start_at", startIso)
     .lt("start_at", endIso)
@@ -333,7 +335,7 @@ export async function listAppointmentsRecent(daysBack: number): Promise<Appointm
   const { data, error } = await supabase
     .from("appointments")
     .select(
-      "id, service_title, estimated_minutes, start_at, status, notes, customer:customers(id, name, phone, email), vehicle:vehicles(id, make, model, year, plate)",
+      "id, service_title, estimated_minutes, estimated_price, start_at, status, notes, customer:customers(id, name, phone, email), vehicle:vehicles(id, make, model, year, plate)",
     )
     .gte("start_at", startIso)
     .order("start_at", { ascending: false });
@@ -346,20 +348,22 @@ export async function listAppointmentsRecent(daysBack: number): Promise<Appointm
 
 export async function createAppointment(input: {
   orgId: string;
-  customerId: string;
-  vehicleId: string;
+  customerId?: string | null;
+  vehicleId?: string | null;
   serviceTitle: string;
-  estimatedMinutes: number;
+  estimatedMinutes?: number | null;
+  estimatedPrice?: number | null;
   startAtIso: string;
   status: AppointmentStatus;
   notes?: string;
 }): Promise<void> {
   const { error } = await supabase.from("appointments").insert({
     org_id: input.orgId,
-    customer_id: input.customerId,
-    vehicle_id: input.vehicleId,
+    customer_id: input.customerId ?? null,
+    vehicle_id: input.vehicleId ?? null,
     service_title: input.serviceTitle,
-    estimated_minutes: input.estimatedMinutes,
+    estimated_minutes: input.estimatedMinutes ?? null,
+    estimated_price: input.estimatedPrice ?? null,
     start_at: input.startAtIso,
     status: input.status,
     notes: input.notes?.trim() || null,
@@ -384,9 +388,12 @@ export async function updateAppointmentSchedule(
   appointmentId: string,
   patch: {
     start_at?: string;
-    estimated_minutes?: number;
+    estimated_minutes?: number | null;
+    estimated_price?: number | null;
     service_title?: string;
     notes?: string | null;
+    customer_id?: string | null;
+    vehicle_id?: string | null;
   },
 ): Promise<void> {
   const { error } = await supabase

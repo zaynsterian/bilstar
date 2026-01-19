@@ -333,9 +333,9 @@ export default function JobsPage() {
     if (!appt) return;
 
     setCustomerMode("existing");
-    setCustomerId(appt.customer.id);
+    setCustomerId(appt.customer?.id ?? "");
     setVehicleMode("existing");
-    setVehicleId(appt.vehicle.id);
+    setVehicleId(appt.vehicle?.id ?? "");
   }, [appointmentId, createMode, recentAppointments]);
 
   async function onCreateJob() {
@@ -350,7 +350,7 @@ export default function JobsPage() {
       if (createMode === "appointment") {
         if (!appointmentId) throw new Error("Selectează o programare.");
         // customerId/vehicleId vin din programare
-        if (!finalCustomerId) throw new Error("Client lipsă.");
+        if (!finalCustomerId) throw new Error("Selectează clientul pentru lucrare.");
       } else {
         // manual: poate fi client nou
         if (customerMode === "new") {
@@ -371,7 +371,7 @@ export default function JobsPage() {
       let finalVehicleId = vehicleId;
 
       if (createMode === "appointment") {
-        if (!finalVehicleId) throw new Error("Vehicul lipsă.");
+        if (!finalVehicleId) throw new Error("Selectează vehiculul pentru lucrare.");
       } else {
         if (vehicleMode === "new") {
           const maybeYear = year.trim() ? Number(year.trim()) : undefined;
@@ -935,18 +935,52 @@ export default function JobsPage() {
           </div>
 
           {createMode === "appointment" ? (
-            <div>
-              <div className="muted" style={{ marginBottom: 6 }}>Alege programare (ultimele 14 zile)</div>
-              <select className="select" value={appointmentId} onChange={(e) => setAppointmentId(e.target.value)}>
-                <option value="">Selectează…</option>
-                {recentAppointments.map((a) => (
-                  <option key={a.id} value={a.id}>
-                    {fmtDateTime(a.start_at)} — {a.customer.name} — {a.service_title}
-                  </option>
-                ))}
-              </select>
-              <div className="muted" style={{ marginTop: 6 }}>
-                Clientul și vehiculul se preiau automat din programare.
+            <div style={{ display: "grid", gap: 10 }}>
+              <div>
+                <div className="muted" style={{ marginBottom: 6 }}>Alege programare (ultimele 14 zile)</div>
+                <select className="select" value={appointmentId} onChange={(e) => setAppointmentId(e.target.value)}>
+                  <option value="">Selectează…</option>
+                  {recentAppointments.map((a) => (
+                    <option key={a.id} value={a.id}>
+                      {fmtDateTime(a.start_at)} — {(a.customer?.name ?? "Client necunoscut")} — {a.service_title}
+                    </option>
+                  ))}
+                </select>
+
+                <div className="muted" style={{ marginTop: 6 }}>
+                  Dacă programarea nu are client/vehicul (sau vrei să le schimbi), le alegi mai jos.
+                </div>
+              </div>
+
+              <div className="grid2">
+                <div>
+                  <div className="muted" style={{ marginBottom: 6 }}>Client (pentru lucrare)</div>
+                  <select className="select" value={customerId} onChange={(e) => setCustomerId(e.target.value)}>
+                    <option value="">Selectează client…</option>
+                    {customers.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.name} {c.phone ? `(${c.phone})` : ""}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <div className="muted" style={{ marginBottom: 6 }}>Vehicul (pentru lucrare)</div>
+                  <select
+                    className="select"
+                    value={vehicleId}
+                    onChange={(e) => setVehicleId(e.target.value)}
+                    disabled={!customerId}
+                  >
+                    <option value="">Selectează vehicul…</option>
+                    {vehicles.map((v) => (
+                      <option key={v.id} value={v.id}>
+                        {vehicleLabel(v)}
+                      </option>
+                    ))}
+                  </select>
+                </div>
               </div>
             </div>
           ) : (

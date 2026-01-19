@@ -43,6 +43,9 @@ type EventResizeArg = {
   revert: () => void;
 };
 
+function moneyRON(n: number) {
+  return new Intl.NumberFormat("ro-RO", { style: "currency", currency: "RON" }).format(n);
+}
 
 function ymdInTimeZone(d: Date, timeZone: string) {
   const parts = new Intl.DateTimeFormat("en-CA", {
@@ -85,11 +88,8 @@ function tzLocalInputToUtcIso(localValue: string): string {
   const [y, m, d] = datePart.split("-").map((x) => parseInt(x, 10));
   const [hh, mm] = timePart.split(":").map((x) => parseInt(x, 10));
 
-  // This is the intended wall time (Bucharest). We find its UTC instant by
-  // binary searching for a UTC time that formats to the same wall time in that timezone.
   const target = { y, m, d, hh, mm };
 
-  // start from a rough guess: treat as local then adjust
   let lo = Date.UTC(y, m - 1, d, hh, mm) - 6 * 60 * 60 * 1000;
   let hi = Date.UTC(y, m - 1, d, hh, mm) + 6 * 60 * 60 * 1000;
 
@@ -103,6 +103,7 @@ function tzLocalInputToUtcIso(localValue: string): string {
     hour12: false,
   });
 
+    // Inlined in JS below
   function partsFor(ms: number) {
     const parts = fmt.formatToParts(new Date(ms));
     return {
@@ -135,11 +136,11 @@ function tzLocalInputToUtcIso(localValue: string): string {
     else hi = mid - 30 * 1000;
   }
 
-  // fallback (should rarely happen)
   return new Date(Date.UTC(y, m - 1, d, hh, mm)).toISOString();
 }
 
-function vehicleLabel(v: Vehicle) {
+function vehicleLabel(v: Vehicle | null) {
+  if (!v) return "Vehicul necunoscut";
   const core = [v.make, v.model].filter(Boolean).join(" ");
   const plate = v.plate ? ` • ${v.plate}` : "";
   const year = v.year ? ` • ${v.year}` : "";
@@ -155,6 +156,10 @@ function fmtDateTime(iso: string) {
     hour: "2-digit",
     minute: "2-digit",
   }).format(new Date(iso));
+}
+
+function customerName(c: Customer | null) {
+  return c?.name || "Client necunoscut";
 }
 
 export default function CalendarPage() {
@@ -175,7 +180,8 @@ export default function CalendarPage() {
   const [customerId, setCustomerId] = useState<string>("");
   const [vehicleId, setVehicleId] = useState<string>("");
   const [serviceTitle, setServiceTitle] = useState("");
-  const [estimatedMinutes, setEstimatedMinutes] = useState("60");
+  const [estimatedMinutes, setEstimatedMinutes] = useState<string>("");
+  const [estimatedPrice, setEstimatedPrice] = useState<string>("");
   const [startAtLocal, setStartAtLocal] = useState("");
   const [status, setStatus] = useState<AppointmentStatus>("new");
   const [notes, setNotes] = useState("");
@@ -186,10 +192,16 @@ export default function CalendarPage() {
   const [selected, setSelected] = useState<AppointmentRow | null>(null);
 
   const [dServiceTitle, setDServiceTitle] = useState("");
-  const [dEstimatedMinutes, setDEstimatedMinutes] = useState("60");
+  const [dEstimatedMinutes, setDEstimatedMinutes] = useState<string>("");
+  const [dEstimatedPrice, setDEstimatedPrice] = useState<string>("");
   const [dStartAtLocal, setDStartAtLocal] = useState("");
   const [dStatus, setDStatus] = useState<AppointmentStatus>("new");
   const [dNotes, setDNotes] = useState("");
+
+  const [dCustomerId, setDCustomerId] = useState<string>("");
+  const [dVehicleId, setDVehicleId] = useState<string>("");
+  const [dVehicles, setDVehicles] = useState<Vehicle[]>([]);
+
   const [savingDetails, setSavingDetails] = useState(false);
 
   useEffect(() => {
@@ -217,13 +229,32 @@ export default function CalendarPage() {
       try {
         const list = await listVehiclesByCustomer(customerId);
         setVehicles(list);
-        if (list.length && !vehicleId) setVehicleId(list[0].id);
+        if (vehicleId && !list.some((v) => v.id === vehicleId)) setVehicleId("");
       } catch (e) {
         setErr(e instanceof Error ? e.message : "Eroare la încărcarea vehiculelor");
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [customerId]);
+
+  useEffect(() => {
+    if (!dCustomerId) {
+      setDVehicles([]);
+      setDVehicleId("");
+      return;
+    }
+
+    (async () => {
+      try {
+        const list = await listVehiclesByCustomer(dCustomerId);
+        setDVehicles(list);
+        if (dVehicleId && !list.some((v) => v.id === dVehicleId)) setDVehicleId("");
+      } catch (e) {
+        setErr(e instanceof Error ? e.message : "Eroare la încărcarea vehiculelor");
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dCustomerId]);
 
   async function refresh() {
     if (!range) return;
@@ -255,11 +286,13 @@ export default function CalendarPage() {
   const events = useMemo(() => {
     return appointments.map((a) => {
       const start = new Date(a.start_at);
-      const end = new Date(start.getTime() + Math.max(0, a.estimated_minutes) * 60_000);
+      const minutesForDisplay = a.estimated_minutes ?? 60;
+      const end = new Date(start.getTime() + Math.max(5, minutesForDisplay) * 60_000);
+      const priceSuffix = a.estimated_price != null ? ` • ~${moneyRON(a.estimated_price)}` : "";
 
       return {
         id: a.id,
-        title: `${a.customer.name} — ${a.service_title}`,
+        title: `${customerName(a.customer)} — ${a.service_title}${priceSuffix}`,
         start: a.start_at,
         end: end.toISOString(),
         extendedProps: { appointment: a },
@@ -268,14 +301,31 @@ export default function CalendarPage() {
   }, [appointments]);
 
   function openCreateWithStart(date: Date) {
-    setCustomerId(customers[0]?.id ?? "");
+    setCustomerId("");
     setVehicleId("");
     setServiceTitle("");
-    setEstimatedMinutes("60");
+    setEstimatedMinutes("");
+    setEstimatedPrice("");
     setStartAtLocal(toDatetimeLocalValueInTz(date.toISOString()));
     setStatus("new");
     setNotes("");
     setOpenCreate(true);
+  }
+
+  function parseOptionalPositiveInt(v: string): number | null {
+    const t = v.trim();
+    if (!t) return null;
+    const n = Number(t);
+    if (!Number.isFinite(n) || n <= 0) throw new Error("Durată invalidă.");
+    return Math.round(n);
+  }
+
+  function parseOptionalNonNegativeMoney(v: string): number | null {
+    const t = v.trim().replace(/,/g, ".");
+    if (!t) return null;
+    const n = Number(t);
+    if (!Number.isFinite(n) || n < 0) throw new Error("Preț invalid.");
+    return n;
   }
 
   async function onCreate() {
@@ -284,24 +334,23 @@ export default function CalendarPage() {
     setSaving(true);
 
     try {
-      if (!customerId) throw new Error("Selectează un client.");
-      if (!vehicleId) throw new Error("Selectează un vehicul.");
       const st = serviceTitle.trim();
       if (!st) throw new Error("Serviciu obligatoriu.");
 
-      const mins = Number(estimatedMinutes);
-      if (!Number.isFinite(mins) || mins <= 0) throw new Error("Durată invalidă.");
-
       if (!startAtLocal) throw new Error("Data/ora este obligatorie.");
+
+      const mins = parseOptionalPositiveInt(estimatedMinutes);
+      const price = parseOptionalNonNegativeMoney(estimatedPrice);
 
       const startAtIso = tzLocalInputToUtcIso(startAtLocal);
 
       await createAppointment({
         orgId,
-        customerId,
-        vehicleId,
+        customerId: customerId || null,
+        vehicleId: customerId ? (vehicleId || null) : null,
         serviceTitle: st,
         estimatedMinutes: mins,
+        estimatedPrice: price,
         startAtIso,
         status,
         notes,
@@ -324,16 +373,24 @@ export default function CalendarPage() {
     openCreateWithStart(arg.start);
   }
 
-  function onEventClick(arg: EventClickArg) {
-    const appt = (arg.event.extendedProps as any)?.appointment as AppointmentRow | undefined;
-    if (!appt) return;
-
+  function hydrateDetails(appt: AppointmentRow) {
     setSelected(appt);
     setDServiceTitle(appt.service_title);
-    setDEstimatedMinutes(String(appt.estimated_minutes ?? 60));
+    setDEstimatedMinutes(appt.estimated_minutes != null ? String(appt.estimated_minutes) : "");
+    setDEstimatedPrice(appt.estimated_price != null ? String(appt.estimated_price) : "");
     setDStartAtLocal(toDatetimeLocalValueInTz(appt.start_at));
     setDStatus(appt.status);
     setDNotes(appt.notes ?? "");
+
+    setDCustomerId(appt.customer?.id ?? "");
+    setDVehicleId(appt.vehicle?.id ?? "");
+    setDVehicles([]);
+  }
+
+  function onEventClick(arg: EventClickArg) {
+    const appt = (arg.event.extendedProps as any)?.appointment as AppointmentRow | undefined;
+    if (!appt) return;
+    hydrateDetails(appt);
     setOpenDetails(true);
   }
 
@@ -388,18 +445,21 @@ export default function CalendarPage() {
       const st = dServiceTitle.trim();
       if (!st) throw new Error("Serviciu obligatoriu.");
 
-      const mins = Number(dEstimatedMinutes);
-      if (!Number.isFinite(mins) || mins <= 0) throw new Error("Durată invalidă.");
-
       if (!dStartAtLocal) throw new Error("Data/ora este obligatorie.");
+
+      const mins = parseOptionalPositiveInt(dEstimatedMinutes);
+      const price = parseOptionalNonNegativeMoney(dEstimatedPrice);
 
       const startAtIso = tzLocalInputToUtcIso(dStartAtLocal);
 
       await updateAppointmentSchedule(selected.id, {
         service_title: st,
         estimated_minutes: mins,
+        estimated_price: price,
         start_at: startAtIso,
         notes: dNotes.trim() || null,
+        customer_id: dCustomerId || null,
+        vehicle_id: dCustomerId ? (dVehicleId || null) : null,
       });
 
       if (dStatus !== selected.status) {
@@ -437,20 +497,14 @@ export default function CalendarPage() {
       <div className="page-header">
         <div>
           <div className="h1">Programări</div>
-          <div className="muted">
-            Calendar zi/săptămână/lună + drag &amp; drop (timezone: {TIME_ZONE})
-          </div>
+          <div className="muted">Calendar zi/săptămână/lună + drag &amp; drop (timezone: {TIME_ZONE})</div>
         </div>
 
         <div className="row">
           <button className="btn" onClick={() => void refresh()} disabled={loading || !range}>
             {loading ? "Se încarcă…" : "Refresh"}
           </button>
-          <button
-            className="btn primary"
-            onClick={() => openCreateWithStart(new Date())}
-            disabled={!orgId || customers.length === 0}
-          >
+          <button className="btn primary" onClick={() => openCreateWithStart(new Date())} disabled={!orgId}>
             + Programare
           </button>
         </div>
@@ -500,20 +554,18 @@ export default function CalendarPage() {
                 className="btn"
                 style={{ width: "100%", textAlign: "left" }}
                 onClick={() => {
-                  setSelected(a);
-                  setDServiceTitle(a.service_title);
-                  setDEstimatedMinutes(String(a.estimated_minutes ?? 60));
-                  setDStartAtLocal(toDatetimeLocalValueInTz(a.start_at));
-                  setDStatus(a.status);
-                  setDNotes(a.notes ?? "");
+                  hydrateDetails(a);
                   setOpenDetails(true);
                 }}
               >
-                <div style={{ fontWeight: 900 }}>{a.customer.name}</div>
+                <div style={{ fontWeight: 900 }}>{customerName(a.customer)}</div>
                 <div className="muted">
                   {fmtDateTime(a.start_at)} • {vehicleLabel(a.vehicle)}
                 </div>
-                <div className="muted">{a.service_title}</div>
+                <div className="muted">
+                  {a.service_title}
+                  {a.estimated_price != null ? ` • ~${moneyRON(a.estimated_price)}` : ""}
+                </div>
                 <div style={{ marginTop: 6 }}>
                   <span className="badge">{STATUS_LABEL[a.status]}</span>
                 </div>
@@ -526,8 +578,7 @@ export default function CalendarPage() {
           </div>
 
           <div style={{ marginTop: 12 }} className="muted">
-            Tip: Poți trage programările în calendar (drag &amp; drop) sau le poți
-            redimensiona ca să schimbi durata.
+            Tip: Poți trage programările în calendar (drag &amp; drop) sau le poți redimensiona ca să schimbi durata.
           </div>
         </div>
       </div>
@@ -537,15 +588,9 @@ export default function CalendarPage() {
         <div style={{ display: "grid", gap: 10 }}>
           <div className="grid2">
             <div>
-              <div className="muted" style={{ marginBottom: 6 }}>
-                Client
-              </div>
-              <select
-                className="select"
-                value={customerId}
-                onChange={(e) => setCustomerId(e.target.value)}
-              >
-                <option value="">— alege —</option>
+              <div className="muted" style={{ marginBottom: 6 }}>Client (opțional)</div>
+              <select className="select" value={customerId} onChange={(e) => setCustomerId(e.target.value)}>
+                <option value="">— (necunoscut) —</option>
                 {customers.map((c) => (
                   <option key={c.id} value={c.id}>
                     {c.name}
@@ -555,16 +600,14 @@ export default function CalendarPage() {
             </div>
 
             <div>
-              <div className="muted" style={{ marginBottom: 6 }}>
-                Vehicul
-              </div>
+              <div className="muted" style={{ marginBottom: 6 }}>Vehicul (opțional)</div>
               <select
                 className="select"
                 value={vehicleId}
                 onChange={(e) => setVehicleId(e.target.value)}
                 disabled={!customerId}
               >
-                <option value="">— alege —</option>
+                <option value="">— (necunoscut) —</option>
                 {vehicles.map((v) => (
                   <option key={v.id} value={v.id}>
                     {vehicleLabel(v)}
@@ -576,50 +619,28 @@ export default function CalendarPage() {
 
           <div className="grid2">
             <div>
-              <div className="muted" style={{ marginBottom: 6 }}>
-                Data / ora (RO)
-              </div>
-              <input
-                type="datetime-local"
-                className="input"
-                value={startAtLocal}
-                onChange={(e) => setStartAtLocal(e.target.value)}
-              />
+              <div className="muted" style={{ marginBottom: 6 }}>Data / ora (RO)</div>
+              <input type="datetime-local" className="input" value={startAtLocal} onChange={(e) => setStartAtLocal(e.target.value)} />
             </div>
             <div>
-              <div className="muted" style={{ marginBottom: 6 }}>
-                Durată (min)
-              </div>
-              <input
-                className="input"
-                value={estimatedMinutes}
-                onChange={(e) => setEstimatedMinutes(e.target.value)}
-              />
+              <div className="muted" style={{ marginBottom: 6 }}>Durată (min) (opțional)</div>
+              <input className="input" value={estimatedMinutes} onChange={(e) => setEstimatedMinutes(e.target.value)} placeholder="Ex: 90" />
             </div>
           </div>
 
           <div>
-            <div className="muted" style={{ marginBottom: 6 }}>
-              Serviciu
-            </div>
-            <input
-              className="input"
-              value={serviceTitle}
-              onChange={(e) => setServiceTitle(e.target.value)}
-              placeholder="Ex: Schimb ulei + filtre"
-            />
+            <div className="muted" style={{ marginBottom: 6 }}>Serviciu</div>
+            <input className="input" value={serviceTitle} onChange={(e) => setServiceTitle(e.target.value)} placeholder="Ex: Schimb distribuție" />
           </div>
 
           <div className="grid2">
             <div>
-              <div className="muted" style={{ marginBottom: 6 }}>
-                Status
-              </div>
-              <select
-                className="select"
-                value={status}
-                onChange={(e) => setStatus(e.target.value as AppointmentStatus)}
-              >
+              <div className="muted" style={{ marginBottom: 6 }}>Preț estimat (RON) (opțional)</div>
+              <input className="input" value={estimatedPrice} onChange={(e) => setEstimatedPrice(e.target.value)} placeholder="Ex: 600" />
+            </div>
+            <div>
+              <div className="muted" style={{ marginBottom: 6 }}>Status</div>
+              <select className="select" value={status} onChange={(e) => setStatus(e.target.value as AppointmentStatus)}>
                 {Object.keys(STATUS_LABEL).map((k) => (
                   <option key={k} value={k}>
                     {STATUS_LABEL[k as AppointmentStatus]}
@@ -627,25 +648,15 @@ export default function CalendarPage() {
                 ))}
               </select>
             </div>
-            <div />
           </div>
 
           <div>
-            <div className="muted" style={{ marginBottom: 6 }}>
-              Note (opțional)
-            </div>
-            <textarea
-              className="textarea"
-              value={notes}
-              onChange={(e) => setNotes(e.target.value)}
-              placeholder="Detalii (piese aduse, simptome, etc.)"
-            />
+            <div className="muted" style={{ marginBottom: 6 }}>Note (opțional)</div>
+            <textarea className="textarea" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Detalii (piese aduse, simptome, etc.)" />
           </div>
 
           <div className="row" style={{ justifyContent: "flex-end" }}>
-            <button className="btn" onClick={() => setOpenCreate(false)}>
-              Anulează
-            </button>
+            <button className="btn" onClick={() => setOpenCreate(false)}>Anulează</button>
             <button className="btn primary" onClick={() => void onCreate()} disabled={saving}>
               {saving ? "Se salvează…" : "Salvează"}
             </button>
@@ -656,7 +667,7 @@ export default function CalendarPage() {
       {/* Details */}
       <Modal
         open={openDetails}
-        title={selected ? `Programare • ${selected.customer.name}` : "Programare"}
+        title={selected ? `Programare • ${customerName(selected.customer)}` : "Programare"}
         onClose={() => setOpenDetails(false)}
       >
         {!selected ? (
@@ -665,49 +676,23 @@ export default function CalendarPage() {
           <div style={{ display: "grid", gap: 10 }}>
             <div className="grid2">
               <div>
-                <div className="muted" style={{ marginBottom: 6 }}>
-                  Data / ora (RO)
-                </div>
-                <input
-                  type="datetime-local"
-                  className="input"
-                  value={dStartAtLocal}
-                  onChange={(e) => setDStartAtLocal(e.target.value)}
-                />
+                <div className="muted" style={{ marginBottom: 6 }}>Data / ora (RO)</div>
+                <input type="datetime-local" className="input" value={dStartAtLocal} onChange={(e) => setDStartAtLocal(e.target.value)} />
               </div>
               <div>
-                <div className="muted" style={{ marginBottom: 6 }}>
-                  Durată (min)
-                </div>
-                <input
-                  className="input"
-                  value={dEstimatedMinutes}
-                  onChange={(e) => setDEstimatedMinutes(e.target.value)}
-                />
+                <div className="muted" style={{ marginBottom: 6 }}>Durată (min) (opțional)</div>
+                <input className="input" value={dEstimatedMinutes} onChange={(e) => setDEstimatedMinutes(e.target.value)} placeholder="Ex: 90" />
               </div>
-            </div>
-
-            <div>
-              <div className="muted" style={{ marginBottom: 6 }}>
-                Serviciu
-              </div>
-              <input
-                className="input"
-                value={dServiceTitle}
-                onChange={(e) => setDServiceTitle(e.target.value)}
-              />
             </div>
 
             <div className="grid2">
               <div>
-                <div className="muted" style={{ marginBottom: 6 }}>
-                  Status
-                </div>
-                <select
-                  className="select"
-                  value={dStatus}
-                  onChange={(e) => setDStatus(e.target.value as AppointmentStatus)}
-                >
+                <div className="muted" style={{ marginBottom: 6 }}>Preț estimat (RON) (opțional)</div>
+                <input className="input" value={dEstimatedPrice} onChange={(e) => setDEstimatedPrice(e.target.value)} placeholder="Ex: 600" />
+              </div>
+              <div>
+                <div className="muted" style={{ marginBottom: 6 }}>Status</div>
+                <select className="select" value={dStatus} onChange={(e) => setDStatus(e.target.value as AppointmentStatus)}>
                   {Object.keys(STATUS_LABEL).map((k) => (
                     <option key={k} value={k}>
                       {STATUS_LABEL[k as AppointmentStatus]}
@@ -715,24 +700,41 @@ export default function CalendarPage() {
                   ))}
                 </select>
               </div>
+            </div>
+
+            <div>
+              <div className="muted" style={{ marginBottom: 6 }}>Serviciu</div>
+              <input className="input" value={dServiceTitle} onChange={(e) => setDServiceTitle(e.target.value)} />
+            </div>
+
+            <div className="grid2">
               <div>
-                <div className="muted" style={{ marginBottom: 6 }}>
-                  Client / vehicul
-                </div>
-                <div style={{ fontWeight: 900 }}>{selected.customer.name}</div>
-                <div className="muted">{vehicleLabel(selected.vehicle)}</div>
+                <div className="muted" style={{ marginBottom: 6 }}>Client (opțional)</div>
+                <select className="select" value={dCustomerId} onChange={(e) => setDCustomerId(e.target.value)}>
+                  <option value="">— (necunoscut) —</option>
+                  {customers.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <div className="muted" style={{ marginBottom: 6 }}>Vehicul (opțional)</div>
+                <select className="select" value={dVehicleId} onChange={(e) => setDVehicleId(e.target.value)} disabled={!dCustomerId}>
+                  <option value="">— (necunoscut) —</option>
+                  {dVehicles.map((v) => (
+                    <option key={v.id} value={v.id}>
+                      {vehicleLabel(v)}
+                    </option>
+                  ))}
+                </select>
               </div>
             </div>
 
             <div>
-              <div className="muted" style={{ marginBottom: 6 }}>
-                Note
-              </div>
-              <textarea
-                className="textarea"
-                value={dNotes}
-                onChange={(e) => setDNotes(e.target.value)}
-              />
+              <div className="muted" style={{ marginBottom: 6 }}>Note</div>
+              <textarea className="textarea" value={dNotes} onChange={(e) => setDNotes(e.target.value)} />
             </div>
 
             <div className="row" style={{ justifyContent: "space-between" }}>
