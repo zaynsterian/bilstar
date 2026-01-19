@@ -17,6 +17,8 @@ type ImportRow = {
   norm_minutes: number;
 };
 
+type ImportTimeUnit = "tech100" | "minutes";
+
 function normHeaderKey(v: unknown): string {
   return String(v ?? "")
     .trim()
@@ -32,10 +34,22 @@ function pick<T extends object>(obj: T, keys: string[]): string {
   return "";
 }
 
-function toInt(v: string): number {
-  const n = Number(String(v).replace(/,/g, "."));
-  if (!Number.isFinite(n)) return 0;
-  return Math.max(0, Math.floor(n));
+function toNumberAny(v: unknown): number {
+  if (v == null) return NaN;
+  if (typeof v === "number") return v;
+  const s = String(v).trim();
+  if (!s) return NaN;
+  // allow Romanian decimals (comma)
+  const n = Number(s.replace(/\s+/g, "").replace(/,/g, "."));
+  return n;
+}
+
+function toMinutesFromImportedTime(v: unknown, unit: ImportTimeUnit): number {
+  const n = toNumberAny(v);
+  if (!Number.isFinite(n) || n < 0) return 0;
+  if (unit === "minutes") return Math.max(0, Math.round(n));
+  // "tech100" = ora tehnica: 1.00 => 100 minute
+  return Math.max(0, Math.round(n * 100));
 }
 
 export default function NormativePage() {
@@ -60,7 +74,9 @@ export default function NormativePage() {
   // import modal
   const [openImport, setOpenImport] = useState(false);
   const [importName, setImportName] = useState<string>("");
+  const [importFile, setImportFile] = useState<File | null>(null);
   const [importRows, setImportRows] = useState<ImportRow[]>([]);
+  const [importTimeUnit, setImportTimeUnit] = useState<ImportTimeUnit>("tech100");
   const [importing, setImporting] = useState(false);
   const [importErr, setImportErr] = useState<string | null>(null);
 
@@ -165,11 +181,13 @@ export default function NormativePage() {
   function openImportModal() {
     setImportErr(null);
     setImportName("");
+    setImportFile(null);
     setImportRows([]);
+    setImportTimeUnit("tech100");
     setOpenImport(true);
   }
 
-  async function onPickImportFile(file: File) {
+  async function parseImportFile(file: File, unit: ImportTimeUnit) {
     setImportErr(null);
     setImportName(file.name);
 
@@ -200,17 +218,25 @@ export default function NormativePage() {
           const code = pick(r, ["code", "cod", "cod_intern", "id", "cod_op"]);
           const name = pick(r, ["name", "denumire", "operatiune", "operațiune", "operatie", "operație"]);
           const cat = pick(r, ["category", "categorie", "categoria"]);
-          const minsStr = pick(r, [
+          const timeVal = pick(r, [
+            // minutes explicit
             "norm_minutes",
             "minute",
             "timp",
             "timp_minute",
             "durata",
             "durata_minute",
+            // Romanian normative header used in your file: "Timp normat"
+            "timp_normat",
             "normat",
+            // tech-hours variants
+            "ore_tehnice",
+            "ore_normate",
+            "norm_tech_hours",
+            "timp_normat_ore_tehnice",
           ]);
 
-          const mins = toInt(minsStr);
+          const mins = toMinutesFromImportedTime(timeVal, unit);
 
           return {
             code: code || null,
@@ -230,6 +256,18 @@ export default function NormativePage() {
       setImportRows([]);
     }
   }
+
+  async function onPickImportFile(file: File) {
+    setImportFile(file);
+    await parseImportFile(file, importTimeUnit);
+  }
+
+  useEffect(() => {
+    if (!openImport) return;
+    if (!importFile) return;
+    void parseImportFile(importFile, importTimeUnit);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [importTimeUnit]);
 
   async function onRunImport() {
     if (!orgId) return;
@@ -392,7 +430,11 @@ export default function NormativePage() {
               <div className="muted" style={{ marginBottom: 6 }}>
                 Activ
               </div>
-              <select className="select" value={isActive ? "yes" : "no"} onChange={(e) => setIsActive(e.target.value === "yes")}>
+              <select
+                className="select"
+                value={isActive ? "yes" : "no"}
+                onChange={(e) => setIsActive(e.target.value === "yes")}
+              >
                 <option value="yes">Da</option>
                 <option value="no">Nu</option>
               </select>
@@ -415,20 +457,48 @@ export default function NormativePage() {
         <div style={{ display: "grid", gap: 10 }}>
           <div className="muted">
             Recomandat: coloane cu header-e precum <b>code</b>, <b>name</b>, <b>category</b>, <b>norm_minutes</b>.
-            Sunt acceptate și variante românești (cod/denumire/categorie/minute/timp).
+            Sunt acceptate și variante românești (Categorie, Cod Intern, Denumire, Timp normat).
           </div>
 
-          <input
-            className="input"
-            type="file"
-            accept=".xlsx,.xls,.csv"
-            onChange={(e) => {
-              const f = e.target.files?.[0];
-              if (f) void onPickImportFile(f);
-            }}
-          />
+          <div className="grid2">
+            <div>
+              <div className="muted" style={{ marginBottom: 6 }}>
+                Unitate "Timp normat"
+              </div>
+              <select
+                className="select"
+                value={importTimeUnit}
+                onChange={(e) => setImportTimeUnit(e.target.value as ImportTimeUnit)}
+              >
+                <option value="tech100">Ore tehnice (1,00 = 100 minute)</option>
+                <option value="minutes">Minute (ex: 60 = 60 minute)</option>
+              </select>
+              <div className="muted" style={{ marginTop: 6 }}>
+                Pentru normativul tău (ex: 0,60 = 60 minute), alege <b>Ore tehnice</b>.
+              </div>
+            </div>
 
-          {importName && <div className="muted">Fișier: <b>{importName}</b></div>}
+            <div>
+              <div className="muted" style={{ marginBottom: 6 }}>
+                Fișier
+              </div>
+              <input
+                className="input"
+                type="file"
+                accept=".xlsx,.xls,.csv"
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (f) void onPickImportFile(f);
+                }}
+              />
+            </div>
+          </div>
+
+          {importName && (
+            <div className="muted">
+              Fișier: <b>{importName}</b>
+            </div>
+          )}
 
           {importErr && (
             <div className="card card-pad" style={{ borderColor: "rgba(220,38,38,0.35)" }}>
@@ -472,11 +542,7 @@ export default function NormativePage() {
             <button className="btn" onClick={() => setOpenImport(false)}>
               Închide
             </button>
-            <button
-              className="btn primary"
-              onClick={() => void onRunImport()}
-              disabled={importing || importRows.length === 0}
-            >
+            <button className="btn primary" onClick={() => void onRunImport()} disabled={importing || importRows.length === 0}>
               {importing ? "Se importă…" : "Import"}
             </button>
           </div>
