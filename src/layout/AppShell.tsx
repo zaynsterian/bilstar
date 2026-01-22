@@ -8,19 +8,45 @@ export default function AppShell() {
         <div className="brand">Bilstar Service</div>
 
         <nav className="nav">
-          <NavLink to="/calendar" className={({ isActive }) => (isActive ? "nav-link active" : "nav-link")}>
+          <NavLink
+            to="/calendar"
+            className={({ isActive }) => (isActive ? "nav-link active" : "nav-link")}
+          >
             Programări
           </NavLink>
-          <NavLink to="/normative" className={({ isActive }) => (isActive ? "nav-link active" : "nav-link")}>
+
+          <NavLink
+            to="/customers"
+            className={({ isActive }) => (isActive ? "nav-link active" : "nav-link")}
+          >
+            Clienți
+          </NavLink>
+
+          <NavLink
+            to="/normative"
+            className={({ isActive }) => (isActive ? "nav-link active" : "nav-link")}
+          >
             Normativ
           </NavLink>
-          <NavLink to="/jobs" className={({ isActive }) => (isActive ? "nav-link active" : "nav-link")}>
+
+          <NavLink
+            to="/jobs"
+            className={({ isActive }) => (isActive ? "nav-link active" : "nav-link")}
+          >
             Lucrări
           </NavLink>
-          <NavLink to="/reports" className={({ isActive }) => (isActive ? "nav-link active" : "nav-link")}>
+
+          <NavLink
+            to="/reports"
+            className={({ isActive }) => (isActive ? "nav-link active" : "nav-link")}
+          >
             Rapoarte
           </NavLink>
-          <NavLink to="/settings" className={({ isActive }) => (isActive ? "nav-link active" : "nav-link")}>
+
+          <NavLink
+            to="/settings"
+            className={({ isActive }) => (isActive ? "nav-link active" : "nav-link")}
+          >
             Setări
           </NavLink>
         </nav>

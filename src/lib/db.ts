@@ -140,6 +140,15 @@ export type ReportJobNetRow = {
   net_items_count: number;
 };
 
+export type CustomerJobSummary = {
+  id: string;
+  created_at: string;
+  progress: JobProgressStatus;
+  appointment_id: string | null;
+  vehicle: Vehicle | null;
+};
+
+
 function throwIfError(error: PostgrestError | null) {
   if (error) throw new Error(error.message);
 }
@@ -280,6 +289,31 @@ export async function listVehiclesByCustomer(customerId: string): Promise<Vehicl
   return (data ?? []) as Vehicle[];
 }
 
+
+export async function listJobsByCustomer(
+  customerId: string,
+  limit = 50,
+): Promise<CustomerJobSummary[]> {
+  const { data, error } = await supabase
+    .from("jobs")
+    .select("id, created_at, progress, appointment_id, vehicle:vehicles(id, make, model, year, plate)")
+    .eq("customer_id", customerId)
+    .order("created_at", { ascending: false })
+    .limit(limit);
+
+  throwIfError(error);
+
+  const rows = (data ?? []) as any[];
+  return rows.map((r) => ({
+    id: String(r.id),
+    created_at: String(r.created_at),
+    progress: r.progress as JobProgressStatus,
+    appointment_id: r.appointment_id == null ? null : String(r.appointment_id),
+    vehicle: one<Vehicle>(r.vehicle),
+  }));
+}
+
+
 export async function createCustomer(input: {
   orgId: string;
   name: string;
@@ -368,6 +402,42 @@ export async function listAppointmentsRecent(daysBack: number): Promise<Appointm
   const rows = (data ?? []) as any[];
   return rows.map(toAppointmentRow);
 }
+
+
+export async function listAppointmentsByCustomer(
+  customerId: string,
+  limit = 50,
+): Promise<AppointmentRow[]> {
+  const { data, error } = await supabase
+    .from("appointments")
+    .select(
+      "id, service_title, estimated_minutes, estimated_price, start_at, status, notes, customer:customers(id, name, phone, email), vehicle:vehicles(id, make, model, year, plate)",
+    )
+    .eq("customer_id", customerId)
+    .order("start_at", { ascending: false })
+    .limit(limit);
+
+  throwIfError(error);
+
+  const rows = (data ?? []) as any[];
+  return rows.map(toAppointmentRow);
+}
+
+export async function getAppointmentById(appointmentId: string): Promise<AppointmentRow> {
+  const { data, error } = await supabase
+    .from("appointments")
+    .select(
+      "id, service_title, estimated_minutes, estimated_price, start_at, status, notes, customer:customers(id, name, phone, email), vehicle:vehicles(id, make, model, year, plate)",
+    )
+    .eq("id", appointmentId)
+    .single();
+
+  throwIfError(error);
+  if (!data) throw new Error("Programarea nu a fost găsită");
+
+  return toAppointmentRow(data as any);
+}
+
 
 export async function createAppointment(input: {
   orgId: string;

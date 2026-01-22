@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import FullCalendar from "@fullcalendar/react";
 import dayGridPlugin from "@fullcalendar/daygrid";
 import timeGridPlugin from "@fullcalendar/timegrid";
@@ -18,6 +18,7 @@ import {
   createCustomer,
   createVehicle,
   deleteAppointment,
+  getAppointmentById,
   getMyProfile,
   listAppointmentsBetween,
   listCustomers,
@@ -167,6 +168,7 @@ function customerName(c: Customer | null) {
 
 export default function CalendarPage() {
   const nav = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
 
   const [orgId, setOrgId] = useState<string | null>(null);
   const [customers, setCustomers] = useState<Customer[]>([]);
@@ -504,6 +506,26 @@ export default function CalendarPage() {
     setDVehicleId(appt.vehicle?.id ?? "");
     setDVehicles([]);
   }
+
+
+  // Open appointment details from other pages (query param: ?appointment=<id>)
+  useEffect(() => {
+    const apptId = searchParams.get("appointment");
+    if (!apptId) return;
+
+    (async () => {
+      try {
+        const appt = await getAppointmentById(apptId);
+        hydrateDetails(appt);
+        setOpenDetails(true);
+      } catch (e) {
+        setErr(e instanceof Error ? e.message : "Eroare la deschiderea programării");
+      } finally {
+        setSearchParams({}, { replace: true });
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams]);
 
   function onEventClick(arg: EventClickArg) {
     const appt = (arg.event.extendedProps as any)?.appointment as AppointmentRow | undefined;

@@ -415,11 +415,17 @@ export default function JobsPage() {
   }
 
   // Open create-job modal from calendar (query param: ?fromAppointment=<id>)
+  // Or select a job directly (query param: ?job=<id>)
   useEffect(() => {
     const apptId = searchParams.get("fromAppointment");
-    if (!apptId) return;
-    void openCreateModal(apptId);
-    // clear param
+    const jobId = searchParams.get("job");
+
+    if (!apptId && !jobId) return;
+
+    if (jobId) setSelectedJobId(jobId);
+    if (apptId) void openCreateModal(apptId);
+
+    // clear params
     setSearchParams({}, { replace: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams]);

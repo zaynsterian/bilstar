@@ -4,6 +4,7 @@ import CalendarPage from "./pages/Calendar";
 import NormativePage from "./pages/Normative";
 import JobsPage from "./pages/Jobs";
 import ReportsPage from "./pages/Reports";
+import CustomersPage from "./pages/Customers";
 import SettingsPage from "./pages/Settings";
 import AppShell from "./layout/AppShell";
 import { useSession } from "./auth/useSession";
@@ -13,6 +14,7 @@ function ProtectedApp() {
     <Routes>
       <Route element={<AppShell />}>
         <Route path="/calendar" element={<CalendarPage />} />
+        <Route path="/customers" element={<CustomersPage />} />
         <Route path="/normative" element={<NormativePage />} />
         <Route path="/jobs" element={<JobsPage />} />
         <Route path="/reports" element={<ReportsPage />} />
