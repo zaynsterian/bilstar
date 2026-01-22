@@ -5,6 +5,7 @@ import dayGridPlugin from "@fullcalendar/daygrid";
 import timeGridPlugin from "@fullcalendar/timegrid";
 import interactionPlugin from "@fullcalendar/interaction";
 import listPlugin from "@fullcalendar/list";
+import luxonPlugin from "@fullcalendar/luxon3";
 import type { DateSelectArg, DatesSetArg, EventClickArg, EventDropArg } from "@fullcalendar/core";
 
 import Modal from "../components/Modal";
@@ -14,6 +15,8 @@ import {
   Customer,
   Vehicle,
   createAppointment,
+  createCustomer,
+  createVehicle,
   deleteAppointment,
   getMyProfile,
   listAppointmentsBetween,
@@ -187,6 +190,22 @@ export default function CalendarPage() {
   const [notes, setNotes] = useState("");
   const [saving, setSaving] = useState(false);
 
+  // Quick-create Customer / Vehicle inside appointment modals
+  const [openAddCustomer, setOpenAddCustomer] = useState(false);
+  const [addCustomerTarget, setAddCustomerTarget] = useState<"create" | "details">("create");
+  const [cName, setCName] = useState("");
+  const [cPhone, setCPhone] = useState("");
+  const [cEmail, setCEmail] = useState("");
+  const [creatingCustomer, setCreatingCustomer] = useState(false);
+
+  const [openAddVehicle, setOpenAddVehicle] = useState(false);
+  const [addVehicleTarget, setAddVehicleTarget] = useState<"create" | "details">("create");
+  const [vMake, setVMake] = useState("");
+  const [vModel, setVModel] = useState("");
+  const [vYear, setVYear] = useState("");
+  const [vPlate, setVPlate] = useState("");
+  const [creatingVehicle, setCreatingVehicle] = useState(false);
+
   // Details modal
   const [openDetails, setOpenDetails] = useState(false);
   const [selected, setSelected] = useState<AppointmentRow | null>(null);
@@ -286,6 +305,7 @@ export default function CalendarPage() {
   const events = useMemo(() => {
     return appointments.map((a) => {
       const start = new Date(a.start_at);
+      const startIso = start.toISOString();
       const minutesForDisplay = a.estimated_minutes ?? 60;
       const end = new Date(start.getTime() + Math.max(5, minutesForDisplay) * 60_000);
       const priceSuffix = a.estimated_price != null ? ` • ~${moneyRON(a.estimated_price)}` : "";
@@ -293,7 +313,7 @@ export default function CalendarPage() {
       return {
         id: a.id,
         title: `${customerName(a.customer)} — ${a.service_title}${priceSuffix}`,
-        start: a.start_at,
+        start: startIso,
         end: end.toISOString(),
         extendedProps: { appointment: a },
       };
@@ -326,6 +346,104 @@ export default function CalendarPage() {
     const n = Number(t);
     if (!Number.isFinite(n) || n < 0) throw new Error("Preț invalid.");
     return n;
+  }
+
+
+  function openCustomerModal(target: "create" | "details") {
+    setAddCustomerTarget(target);
+    setCName("");
+    setCPhone("");
+    setCEmail("");
+    setOpenAddCustomer(true);
+  }
+
+  function openVehicleModal(target: "create" | "details") {
+    setAddVehicleTarget(target);
+    setVMake("");
+    setVModel("");
+    setVYear("");
+    setVPlate("");
+    setOpenAddVehicle(true);
+  }
+
+  async function onAddCustomer() {
+    if (!orgId) return;
+    setErr(null);
+    setCreatingCustomer(true);
+    try {
+      const name = cName.trim();
+      if (!name) throw new Error("Numele clientului este obligatoriu.");
+
+      const created = await createCustomer({
+        orgId,
+        name,
+        phone: cPhone.trim() || undefined,
+        email: cEmail.trim() || undefined,
+      });
+
+      setCustomers((prev) => {
+        const next = [...prev, created];
+        next.sort((a, b) => (a.name || "").localeCompare(b.name || "", "ro"));
+        return next;
+      });
+
+      if (addCustomerTarget === "create") {
+        setCustomerId(created.id);
+        setVehicleId("");
+      } else {
+        setDCustomerId(created.id);
+        setDVehicleId("");
+      }
+
+      setOpenAddCustomer(false);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Eroare la crearea clientului");
+    } finally {
+      setCreatingCustomer(false);
+    }
+  }
+
+  async function onAddVehicle() {
+    if (!orgId) return;
+    setErr(null);
+    setCreatingVehicle(true);
+
+    try {
+      const targetCustomerId = addVehicleTarget === "create" ? customerId : dCustomerId;
+      if (!targetCustomerId) throw new Error("Selectează un client înainte să creezi un vehicul.");
+
+      const make = vMake.trim();
+      const model = vModel.trim();
+      if (!make) throw new Error("Marca este obligatorie.");
+      if (!model) throw new Error("Modelul este obligatoriu.");
+
+      const yearTrim = vYear.trim();
+      const year = yearTrim ? Number(yearTrim) : undefined;
+      if (yearTrim && (!Number.isFinite(year) || year < 1900 || year > 2100)) throw new Error("An invalid.");
+
+      const created = await createVehicle({
+        orgId,
+        customerId: targetCustomerId,
+        make,
+        model,
+        year: yearTrim ? Math.round(year!) : undefined,
+        plate: vPlate.trim() || undefined,
+      });
+
+      if (addVehicleTarget === "create") {
+        setVehicles((prev) => [...prev, created]);
+        setVehicleId(created.id);
+      } else {
+        setDVehicles((prev) => [...prev, created]);
+        setDVehicleId(created.id);
+      }
+
+      setOpenAddVehicle(false);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Eroare la crearea vehiculului");
+    } finally {
+      setCreatingVehicle(false);
+    }
   }
 
   async function onCreate() {
@@ -519,7 +637,7 @@ export default function CalendarPage() {
       <div className="calendar-wrap">
         <div className="card card-pad">
           <FullCalendar
-            plugins={[dayGridPlugin, timeGridPlugin, interactionPlugin, listPlugin]}
+            plugins={[luxonPlugin, dayGridPlugin, timeGridPlugin, interactionPlugin, listPlugin]}
             initialView="timeGridWeek"
             selectable
             editable
@@ -588,7 +706,12 @@ export default function CalendarPage() {
         <div style={{ display: "grid", gap: 10 }}>
           <div className="grid2">
             <div>
-              <div className="muted" style={{ marginBottom: 6 }}>Client (opțional)</div>
+              <div className="row" style={{ justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                <div className="muted">Client (opțional)</div>
+                <button className="btn" style={{ padding: "6px 10px", fontWeight: 750 }} onClick={() => openCustomerModal("create")}>
+                  + Client
+                </button>
+              </div>
               <select className="select" value={customerId} onChange={(e) => setCustomerId(e.target.value)}>
                 <option value="">— (necunoscut) —</option>
                 {customers.map((c) => (
@@ -600,7 +723,18 @@ export default function CalendarPage() {
             </div>
 
             <div>
-              <div className="muted" style={{ marginBottom: 6 }}>Vehicul (opțional)</div>
+              <div className="row" style={{ justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                <div className="muted">Vehicul (opțional)</div>
+                <button
+                  className="btn"
+                  style={{ padding: "6px 10px", fontWeight: 750 }}
+                  onClick={() => openVehicleModal("create")}
+                  disabled={!customerId}
+                  title={!customerId ? "Selectează un client înainte" : "Creează vehicul"}
+                >
+                  + Vehicul
+                </button>
+              </div>
               <select
                 className="select"
                 value={vehicleId}
@@ -709,7 +843,12 @@ export default function CalendarPage() {
 
             <div className="grid2">
               <div>
-                <div className="muted" style={{ marginBottom: 6 }}>Client (opțional)</div>
+                <div className="row" style={{ justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                  <div className="muted">Client (opțional)</div>
+                  <button className="btn" style={{ padding: "6px 10px", fontWeight: 750 }} onClick={() => openCustomerModal("details")}>
+                    + Client
+                  </button>
+                </div>
                 <select className="select" value={dCustomerId} onChange={(e) => setDCustomerId(e.target.value)}>
                   <option value="">— (necunoscut) —</option>
                   {customers.map((c) => (
@@ -720,7 +859,18 @@ export default function CalendarPage() {
                 </select>
               </div>
               <div>
-                <div className="muted" style={{ marginBottom: 6 }}>Vehicul (opțional)</div>
+                <div className="row" style={{ justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                  <div className="muted">Vehicul (opțional)</div>
+                  <button
+                    className="btn"
+                    style={{ padding: "6px 10px", fontWeight: 750 }}
+                    onClick={() => openVehicleModal("details")}
+                    disabled={!dCustomerId}
+                    title={!dCustomerId ? "Selectează un client înainte" : "Creează vehicul"}
+                  >
+                    + Vehicul
+                  </button>
+                </div>
                 <select className="select" value={dVehicleId} onChange={(e) => setDVehicleId(e.target.value)} disabled={!dCustomerId}>
                   <option value="">— (necunoscut) —</option>
                   {dVehicles.map((v) => (
@@ -758,6 +908,76 @@ export default function CalendarPage() {
             </div>
           </div>
         )}
+      </Modal>
+
+      {/* Quick add: Customer */}
+      <Modal open={openAddCustomer} title="Client nou" onClose={() => setOpenAddCustomer(false)}>
+        <div style={{ display: "grid", gap: 10 }}>
+          <div>
+            <div className="muted" style={{ marginBottom: 6 }}>Nume *</div>
+            <input className="input" value={cName} onChange={(e) => setCName(e.target.value)} placeholder="Ex: Popescu Ion" />
+          </div>
+
+          <div className="grid2">
+            <div>
+              <div className="muted" style={{ marginBottom: 6 }}>Telefon (opțional)</div>
+              <input className="input" value={cPhone} onChange={(e) => setCPhone(e.target.value)} placeholder="Ex: 07xxxxxxxx" />
+            </div>
+            <div>
+              <div className="muted" style={{ marginBottom: 6 }}>Email (opțional)</div>
+              <input className="input" value={cEmail} onChange={(e) => setCEmail(e.target.value)} placeholder="Ex: nume@email.com" />
+            </div>
+          </div>
+
+          <div className="row" style={{ justifyContent: "flex-end" }}>
+            <button className="btn" onClick={() => setOpenAddCustomer(false)} disabled={creatingCustomer}>
+              Renunță
+            </button>
+            <button className="btn primary" onClick={() => void onAddCustomer()} disabled={creatingCustomer}>
+              {creatingCustomer ? "Se creează…" : "Creează"}
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Quick add: Vehicle */}
+      <Modal open={openAddVehicle} title="Vehicul nou" onClose={() => setOpenAddVehicle(false)}>
+        <div style={{ display: "grid", gap: 10 }}>
+          <div className="muted">
+            Vehiculul va fi creat pentru clientul selectat.
+          </div>
+
+          <div className="grid2">
+            <div>
+              <div className="muted" style={{ marginBottom: 6 }}>Marca *</div>
+              <input className="input" value={vMake} onChange={(e) => setVMake(e.target.value)} placeholder="Ex: BMW" />
+            </div>
+            <div>
+              <div className="muted" style={{ marginBottom: 6 }}>Model *</div>
+              <input className="input" value={vModel} onChange={(e) => setVModel(e.target.value)} placeholder="Ex: 320d" />
+            </div>
+          </div>
+
+          <div className="grid2">
+            <div>
+              <div className="muted" style={{ marginBottom: 6 }}>An (opțional)</div>
+              <input className="input" value={vYear} onChange={(e) => setVYear(e.target.value)} placeholder="Ex: 2016" />
+            </div>
+            <div>
+              <div className="muted" style={{ marginBottom: 6 }}>Număr (opțional)</div>
+              <input className="input" value={vPlate} onChange={(e) => setVPlate(e.target.value)} placeholder="Ex: B-01-ABC" />
+            </div>
+          </div>
+
+          <div className="row" style={{ justifyContent: "flex-end" }}>
+            <button className="btn" onClick={() => setOpenAddVehicle(false)} disabled={creatingVehicle}>
+              Renunță
+            </button>
+            <button className="btn primary" onClick={() => void onAddVehicle()} disabled={creatingVehicle}>
+              {creatingVehicle ? "Se creează…" : "Creează"}
+            </button>
+          </div>
+        </div>
       </Modal>
     </div>
   );
