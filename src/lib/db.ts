@@ -91,6 +91,20 @@ export type JobItemRow = {
   operation?: Pick<Operation, "id" | "code" | "name" | "category" | "norm_minutes"> | null;
 };
 
+export type JobNetItemRow = {
+  id: string;
+  item_type: JobItemType;
+  title: string;
+  title_key: string;
+  qty: number;
+  sale_unit_price: number;
+  purchase_unit_cost: number | null;
+  norm_minutes: number | null;
+  net_total: number;
+  source_job_item_id: string | null;
+  created_at: string;
+};
+
 export type JobAttachmentRow = {
   id: string;
   job_id: string;
@@ -117,6 +131,13 @@ export type ReportJobRow = {
     labor_total_override: number | null;
     operation_id: string | null;
   }>;
+};
+
+export type ReportJobNetRow = {
+  id: string;
+  created_at: string;
+  net_total: number;
+  net_items_count: number;
 };
 
 function throwIfError(error: PostgrestError | null) {
@@ -676,6 +697,146 @@ export async function deleteJobItem(itemId: string): Promise<void> {
   throwIfError(error);
 }
 
+
+/** ================= JOB NET (INTERNAL) ================= */
+
+export async function listJobNetItems(jobId: string): Promise<JobNetItemRow[]> {
+  const { data, error } = await supabase
+    .from("job_net_items")
+    .select(
+      "id, item_type, title, title_key, qty, sale_unit_price, purchase_unit_cost, norm_minutes, net_total, source_job_item_id, created_at",
+    )
+    .eq("job_id", jobId)
+    .order("created_at", { ascending: true });
+
+  throwIfError(error);
+
+  const rows = (data ?? []) as any[];
+  return rows.map((r) => ({
+    id: String(r.id),
+    item_type: r.item_type as JobItemType,
+    title: String(r.title),
+    title_key: String(r.title_key ?? ""),
+    qty: toNumber(r.qty),
+    sale_unit_price: toNumber(r.sale_unit_price),
+    purchase_unit_cost: r.purchase_unit_cost == null ? null : toNumber(r.purchase_unit_cost),
+    norm_minutes: (r.norm_minutes as number | null) ?? null,
+    net_total: toNumber(r.net_total),
+    source_job_item_id: (r.source_job_item_id as string | null) ?? null,
+    created_at: String(r.created_at),
+  }));
+}
+
+export async function createJobNetItem(input: {
+  orgId: string;
+  jobId: string;
+  itemType: JobItemType;
+  title: string;
+  titleKey?: string;
+  qty?: number;
+  saleUnitPrice?: number;
+  purchaseUnitCost?: number | null;
+  normMinutes?: number | null;
+  netTotal: number;
+  sourceJobItemId?: string | null;
+}): Promise<void> {
+  const { error } = await supabase.from("job_net_items").insert({
+    org_id: input.orgId,
+    job_id: input.jobId,
+    item_type: input.itemType,
+    title: input.title.trim(),
+    title_key: (input.titleKey ?? "").trim(),
+    qty: input.qty ?? 1,
+    sale_unit_price: input.saleUnitPrice ?? 0,
+    purchase_unit_cost: input.purchaseUnitCost ?? null,
+    norm_minutes: input.normMinutes ?? null,
+    net_total: input.netTotal,
+    source_job_item_id: input.sourceJobItemId ?? null,
+  });
+
+  throwIfError(error);
+}
+
+export async function updateJobNetItem(
+  id: string,
+  patch: Partial<{
+    title: string;
+    titleKey: string;
+    qty: number;
+    saleUnitPrice: number;
+    purchaseUnitCost: number | null;
+    normMinutes: number | null;
+    netTotal: number;
+  }>,
+): Promise<void> {
+  const updateObj: any = {};
+  if (patch.title !== undefined) updateObj.title = patch.title.trim();
+  if (patch.titleKey !== undefined) updateObj.title_key = patch.titleKey.trim();
+  if (patch.qty !== undefined) updateObj.qty = patch.qty;
+  if (patch.saleUnitPrice !== undefined) updateObj.sale_unit_price = patch.saleUnitPrice;
+  if (patch.purchaseUnitCost !== undefined) updateObj.purchase_unit_cost = patch.purchaseUnitCost;
+  if (patch.normMinutes !== undefined) updateObj.norm_minutes = patch.normMinutes;
+  if (patch.netTotal !== undefined) updateObj.net_total = patch.netTotal;
+
+  const { error } = await supabase.from("job_net_items").update(updateObj).eq("id", id);
+  throwIfError(error);
+}
+
+export async function deleteJobNetItem(id: string): Promise<void> {
+  const { error } = await supabase.from("job_net_items").delete().eq("id", id);
+  throwIfError(error);
+}
+
+export async function upsertJobNetItemsIgnoreDuplicates(
+  rows: Array<{
+    org_id: string;
+    job_id: string;
+    item_type: JobItemType;
+    title: string;
+    title_key?: string;
+    qty?: number;
+    sale_unit_price?: number;
+    purchase_unit_cost?: number | null;
+    norm_minutes?: number | null;
+    net_total: number;
+    source_job_item_id: string | null;
+  }>,
+): Promise<void> {
+  if (rows.length === 0) return;
+
+  const { error } = await supabase.from("job_net_items").upsert(rows as any, {
+    onConflict: "org_id,job_id,source_job_item_id",
+    ignoreDuplicates: true,
+  });
+
+  throwIfError(error);
+}
+
+export async function getNetPartPurchaseCostPrefill(titleKeys: string[]): Promise<Record<string, number>> {
+  const keys = Array.from(new Set(titleKeys.map((k) => (k ?? "").trim()).filter(Boolean)));
+  if (keys.length === 0) return {};
+
+  const { data, error } = await supabase
+    .from("job_net_items")
+    .select("title_key, purchase_unit_cost, created_at")
+    .eq("item_type", "part")
+    .not("purchase_unit_cost", "is", null)
+    .in("title_key", keys)
+    .order("created_at", { ascending: false });
+
+  throwIfError(error);
+
+  const out: Record<string, number> = {};
+  for (const r of (data ?? []) as any[]) {
+    const k = String(r.title_key ?? "").trim();
+    if (!k) continue;
+    if (out[k] !== undefined) continue;
+    out[k] = toNumber(r.purchase_unit_cost);
+  }
+  return out;
+}
+
+
 /** ================= JOB ATTACHMENTS ================= */
 
 export async function listJobAttachments(jobId: string): Promise<JobAttachmentRow[]> {
@@ -749,6 +910,33 @@ export async function listFinishedJobsWithItemsBetween(
       customer,
       vehicle,
       items: (r.items ?? []) as ReportJobRow["items"],
+    };
+  });
+}
+
+export async function listFinishedJobsWithNetBetween(
+  startIso: string,
+  endIso: string,
+): Promise<ReportJobNetRow[]> {
+  const { data, error } = await supabase
+    .from("jobs")
+    .select("id, created_at, net_items:job_net_items(net_total)")
+    .eq("progress", "finished")
+    .gte("created_at", startIso)
+    .lt("created_at", endIso)
+    .order("created_at", { ascending: true });
+
+  throwIfError(error);
+
+  const rows = (data ?? []) as any[];
+  return rows.map((r) => {
+    const items = (r.net_items ?? []) as any[];
+    const sum = items.reduce((acc, it) => acc + toNumber(it.net_total), 0);
+    return {
+      id: String(r.id),
+      created_at: String(r.created_at),
+      net_total: sum,
+      net_items_count: items.length,
     };
   });
 }

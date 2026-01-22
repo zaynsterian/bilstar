@@ -10,6 +10,7 @@ import {
   JobAttachmentRow,
   JobItemRow,
   JobItemType,
+  JobNetItemRow,
   JobProgressStatus,
   JobRow,
   Operation,
@@ -18,8 +19,10 @@ import {
   createJob,
   createJobAttachmentRecord,
   createJobItem,
+  createJobNetItem,
   createVehicle,
   deleteJobItem,
+  deleteJobNetItem,
   deleteJobAttachmentRecord,
   getMyProfile,
   getOrgSettings,
@@ -27,6 +30,10 @@ import {
   listCustomers,
   listJobAttachments,
   listJobItems,
+  listJobNetItems,
+  getNetPartPurchaseCostPrefill,
+  upsertJobNetItemsIgnoreDuplicates,
+  updateJobNetItem,
   listJobsRecent,
   listOperationsActive,
   listVehiclesByCustomer,
@@ -65,6 +72,35 @@ function fmtDateTime(iso: string) {
 
 function moneyRON(amount: number) {
   return new Intl.NumberFormat("ro-RO", { style: "currency", currency: "RON" }).format(amount);
+}
+
+function titleKey(s: string) {
+  return (s ?? "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function calcNetTotals(items: JobNetItemRow[]) {
+  let labor = 0;
+  let parts = 0;
+  let other = 0;
+
+  for (const it of items) {
+    const v = Number.isFinite(it.net_total) ? it.net_total : 0;
+    if (it.item_type === "labor") labor += v;
+    else if (it.item_type === "part") parts += v;
+    else other += v;
+  }
+
+  return { labor, parts, other, total: labor + parts + other };
+}
+
+function partProfitPerUnit(it: JobNetItemRow) {
+  if (it.purchase_unit_cost == null) return 0;
+  return (it.sale_unit_price || 0) - it.purchase_unit_cost;
 }
 
 function calcJobItemSubtotal(it: JobItemRow, laborRatePerHour: number) {
@@ -123,6 +159,26 @@ export default function JobsPage() {
   const [loadingAttachments, setLoadingAttachments] = useState(false);
   const [uploadingAttachments, setUploadingAttachments] = useState(false);
   const [signedUrlByPath, setSignedUrlByPath] = useState<Record<string, string>>({});
+
+  // NET (venit net intern)
+  const [netOpen, setNetOpen] = useState(false);
+  const [netItems, setNetItems] = useState<JobNetItemRow[]>([]);
+  const [loadingNet, setLoadingNet] = useState(false);
+  const [savingNet, setSavingNet] = useState(false);
+
+  // Inline edits (NET)
+  const [netTotalEditById, setNetTotalEditById] = useState<Record<string, string>>({});
+  const [netPurchaseEditById, setNetPurchaseEditById] = useState<Record<string, string>>({});
+
+  // Add NET item modal
+  const [openNetItem, setOpenNetItem] = useState(false);
+  const [netItemType, setNetItemType] = useState<JobItemType>("labor");
+  const [netTitle, setNetTitle] = useState("");
+  const [netQty, setNetQty] = useState("1");
+  const [netSaleUnitPrice, setNetSaleUnitPrice] = useState("0");
+  const [netPurchaseUnitCost, setNetPurchaseUnitCost] = useState("");
+  const [netNormMinutes, setNetNormMinutes] = useState("0");
+  const [netTotal, setNetTotal] = useState("0");
 
   const [err, setErr] = useState<string | null>(null);
 
@@ -255,10 +311,39 @@ export default function JobsPage() {
     }
   }
 
+
+
+  async function loadNet(jobId: string) {
+    setErr(null);
+    setLoadingNet(true);
+    try {
+      const list = await listJobNetItems(jobId);
+      setNetItems(list);
+
+      // init inline editors
+      setNetTotalEditById(() => {
+        const next: Record<string, string> = {};
+        for (const r of list) next[r.id] = String(r.net_total ?? 0);
+        return next;
+      });
+      setNetPurchaseEditById(() => {
+        const next: Record<string, string> = {};
+        for (const r of list) next[r.id] = r.purchase_unit_cost == null ? "" : String(r.purchase_unit_cost);
+        return next;
+      });
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Eroare la încărcarea NET");
+    } finally {
+      setLoadingNet(false);
+    }
+  }
+
+
   useEffect(() => {
     if (!selectedJobId) return;
     void loadItems(selectedJobId);
     void loadAttachments(selectedJobId);
+    void loadNet(selectedJobId);
   }, [selectedJobId]);
 
   useEffect(() => {
@@ -464,6 +549,21 @@ export default function JobsPage() {
     setOpenItem(true);
   }
 
+  function resetNetModal() {
+    setNetItemType("labor");
+    setNetTitle("");
+    setNetQty("1");
+    setNetSaleUnitPrice("0");
+    setNetPurchaseUnitCost("");
+    setNetNormMinutes("0");
+    setNetTotal("0");
+  }
+
+  function openAddNetItem() {
+    resetNetModal();
+    setOpenNetItem(true);
+  }
+
 
   async function onSaveItem() {
     if (!orgId) return;
@@ -537,7 +637,231 @@ export default function JobsPage() {
     }
   }
 
+
+  async function onDeleteNetItem(itemId: string) {
+    if (!selectedJob) return;
+    setErr(null);
+    try {
+      await deleteJobNetItem(itemId);
+      await loadNet(selectedJob.id);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Eroare la ștergere linie NET");
+    }
+  }
+
+  async function onSaveNetItem() {
+    if (!orgId) return;
+    if (!selectedJob) return;
+
+    setErr(null);
+    setSavingNet(true);
+
+    try {
+      const q = Number((netQty.trim() || "1").replace(",", "."));
+      if (!Number.isFinite(q) || q <= 0) throw new Error("Cantitate invalidă.");
+
+      const title = netTitle.trim() || (netItemType === "labor" ? "Manoperă" : netItemType === "part" ? "Piesă" : "Altceva");
+      const key = titleKey(title);
+
+      if (netItemType === "part") {
+        const sale = Number((netSaleUnitPrice.trim() || "0").replace(",", "."));
+        if (!Number.isFinite(sale) || sale < 0) throw new Error("Preț vânzare invalid.");
+
+        const rawCost = netPurchaseUnitCost.trim();
+        let purchase: number | null = null;
+        if (rawCost) {
+          const pc = Number(rawCost.replace(",", "."));
+          if (!Number.isFinite(pc) || pc < 0) throw new Error("Cost achiziție invalid.");
+          purchase = pc;
+        }
+
+        const subtotal = purchase == null ? 0 : (sale - purchase) * q;
+
+        await createJobNetItem({
+          orgId,
+          jobId: selectedJob.id,
+          itemType: "part",
+          title,
+          titleKey: key,
+          qty: q,
+          saleUnitPrice: sale,
+          purchaseUnitCost: purchase,
+          netTotal: subtotal,
+        });
+      } else if (netItemType === "labor") {
+        const mins = Number((netNormMinutes.trim() || "0").replace(",", "."));
+        if (!Number.isFinite(mins) || mins < 0) throw new Error("Minute invalide.");
+
+        const total = Number((netTotal.trim() || "0").replace(",", "."));
+        if (!Number.isFinite(total)) throw new Error("Total NET invalid.");
+
+        await createJobNetItem({
+          orgId,
+          jobId: selectedJob.id,
+          itemType: "labor",
+          title,
+          titleKey: key,
+          qty: q,
+          normMinutes: mins,
+          netTotal: total,
+        });
+      } else {
+        const total = Number((netTotal.trim() || "0").replace(",", "."));
+        if (!Number.isFinite(total)) throw new Error("Total NET invalid.");
+
+        await createJobNetItem({
+          orgId,
+          jobId: selectedJob.id,
+          itemType: "other",
+          title,
+          titleKey: key,
+          qty: q,
+          netTotal: total,
+        });
+      }
+
+      setOpenNetItem(false);
+      await loadNet(selectedJob.id);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Eroare la salvare NET");
+    } finally {
+      setSavingNet(false);
+    }
+  }
+
+  async function onCommitNetPurchase(it: JobNetItemRow) {
+    if (!selectedJob) return;
+    if (it.item_type !== "part") return;
+
+    setErr(null);
+    setSavingNet(true);
+
+    try {
+      const raw = (netPurchaseEditById[it.id] ?? "").trim();
+      let purchase: number | null = null;
+      if (raw) {
+        const pc = Number(raw.replace(",", "."));
+        if (!Number.isFinite(pc) || pc < 0) throw new Error("Cost achiziție invalid.");
+        purchase = pc;
+      }
+
+      const subtotal = purchase == null ? 0 : ((it.sale_unit_price || 0) - purchase) * (it.qty || 0);
+
+      await updateJobNetItem(it.id, { purchaseUnitCost: purchase, netTotal: subtotal });
+
+      setNetItems((prev) =>
+        prev.map((x) => (x.id === it.id ? { ...x, purchase_unit_cost: purchase, net_total: subtotal } : x)),
+      );
+      setNetTotalEditById((prev) => ({ ...prev, [it.id]: String(subtotal) }));
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Eroare la salvare cost");
+    } finally {
+      setSavingNet(false);
+    }
+  }
+
+  async function onCommitNetTotal(it: JobNetItemRow) {
+    if (!selectedJob) return;
+    if (it.item_type === "part") return;
+
+    setErr(null);
+    setSavingNet(true);
+
+    try {
+      const raw = (netTotalEditById[it.id] ?? "").trim();
+      const total = Number((raw || "0").replace(",", "."));
+      if (!Number.isFinite(total)) throw new Error("Total invalid.");
+
+      await updateJobNetItem(it.id, { netTotal: total });
+
+      setNetItems((prev) => prev.map((x) => (x.id === it.id ? { ...x, net_total: total } : x)));
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Eroare la salvare total");
+    } finally {
+      setSavingNet(false);
+    }
+  }
+
+  async function onImportNetLabor() {
+    if (!orgId) return;
+    if (!selectedJob) return;
+
+    setErr(null);
+    setSavingNet(true);
+
+    try {
+      const rows = items
+        .filter((it) => it.item_type === "labor")
+        .map((it) => {
+          const subtotal = calcJobItemSubtotal(it, laborRate);
+          return {
+            org_id: orgId,
+            job_id: selectedJob.id,
+            item_type: "labor" as const,
+            title: it.title,
+            title_key: titleKey(it.title),
+            qty: it.qty ?? 1,
+            sale_unit_price: 0,
+            purchase_unit_cost: null,
+            norm_minutes: it.norm_minutes ?? null,
+            net_total: subtotal,
+            source_job_item_id: it.id,
+          };
+        });
+
+      await upsertJobNetItemsIgnoreDuplicates(rows);
+      await loadNet(selectedJob.id);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Eroare import manoperă NET");
+    } finally {
+      setSavingNet(false);
+    }
+  }
+
+  async function onImportNetParts() {
+    if (!orgId) return;
+    if (!selectedJob) return;
+
+    setErr(null);
+    setSavingNet(true);
+
+    try {
+      const partItems = items.filter((it) => it.item_type === "part");
+      const keys = partItems.map((it) => titleKey(it.title));
+      const prefill = await getNetPartPurchaseCostPrefill(keys);
+
+      const rows = partItems.map((it) => {
+        const key = titleKey(it.title);
+        const purchase = prefill[key] ?? null;
+        const subtotal = purchase == null ? 0 : ((it.unit_price || 0) - purchase) * (it.qty || 0);
+
+        return {
+          org_id: orgId,
+          job_id: selectedJob.id,
+          item_type: "part" as const,
+          title: it.title,
+          title_key: key,
+          qty: it.qty ?? 1,
+          sale_unit_price: it.unit_price ?? 0,
+          purchase_unit_cost: purchase,
+          norm_minutes: null,
+          net_total: subtotal,
+          source_job_item_id: it.id,
+        };
+      });
+
+      await upsertJobNetItemsIgnoreDuplicates(rows);
+      await loadNet(selectedJob.id);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Eroare import piese NET");
+    } finally {
+      setSavingNet(false);
+    }
+  }
+
+
   const totals = useMemo(() => calcTotals(items, laborRate), [items, laborRate]);
+  const netTotals = useMemo(() => calcNetTotals(netItems), [netItems]);
   const discountNum = selectedJob ? (selectedJob.discount_value ?? 0) : 0;
   const grand = Math.max(0, totals.subtotal - discountNum);
 
@@ -955,6 +1279,170 @@ export default function JobsPage() {
                 )}
               </div>
 
+              <div className="card card-pad" style={{ boxShadow: "none" }}>
+                <div className="row" style={{ justifyContent: "space-between", marginBottom: 8 }}>
+                  <div className="row" style={{ gap: 10, flexWrap: "wrap" }}>
+                    <button
+                      className={`btn ${netOpen ? "primary" : ""}`}
+                      type="button"
+                      onClick={() => setNetOpen((v) => !v)}
+                      title="NET (venit net intern)"
+                    >
+                      NET.
+                    </button>
+
+                    {netOpen && (
+                      <>
+                        <button
+                          className="btn"
+                          type="button"
+                          onClick={() => void onImportNetLabor()}
+                          disabled={savingNet || loadingItems || !selectedJob}
+                          title="Importă toate liniile de manoperă din deviz (valoare integrală)"
+                        >
+                          Importă manopera din deviz
+                        </button>
+                        <button
+                          className="btn"
+                          type="button"
+                          onClick={() => void onImportNetParts()}
+                          disabled={savingNet || loadingItems || !selectedJob}
+                          title="Importă piesele din deviz (profitul se calculează după ce completezi costul de achiziție)"
+                        >
+                          Importă piesele din deviz
+                        </button>
+                        <button className="btn" type="button" onClick={openAddNetItem} disabled={savingNet}>
+                          Adaugă
+                        </button>
+                      </>
+                    )}
+                  </div>
+
+                  <div className="muted">{loadingNet ? "Se încarcă…" : `${netItems.length} linii`}</div>
+                </div>
+
+                {!netOpen ? (
+                  <div className="muted">
+                    Apasă “NET.” pentru a completa venitul net intern (NU se sincronizează automat cu devizul).
+                  </div>
+                ) : (
+                  <>
+                    <table className="table">
+                      <thead>
+                        <tr>
+                          <th>Tip</th>
+                          <th>Denumire</th>
+                          <th>Qty</th>
+                          <th>Vânzare / unitate</th>
+                          <th>Cost achiziție / unitate</th>
+                          <th>Subtotal (NET)</th>
+                          <th></th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {netItems.map((it) => {
+                          const profitUnit = it.item_type === "part" ? partProfitPerUnit(it) : 0;
+
+                          return (
+                            <tr key={it.id}>
+                              <td>
+                                <span className="badge">{it.item_type}</span>
+                              </td>
+                              <td style={{ fontWeight: 850 }}>
+                                {it.title}
+                                {it.item_type === "labor" && it.norm_minutes != null && (
+                                  <div className="muted" style={{ fontSize: 12 }}>
+                                    {it.norm_minutes} min/op
+                                  </div>
+                                )}
+                                {it.item_type === "part" && (
+                                  <div className="muted" style={{ fontSize: 12 }}>
+                                    Profit/unit: <b>{moneyRON(profitUnit)}</b>
+                                    {it.purchase_unit_cost == null && (
+                                      <>
+                                        {" "}
+                                        • <span className="badge">Cost lipsă</span>
+                                      </>
+                                    )}
+                                  </div>
+                                )}
+                              </td>
+                              <td>{it.qty}</td>
+                              <td>{it.item_type === "part" ? moneyRON(it.sale_unit_price) : "—"}</td>
+                              <td>
+                                {it.item_type === "part" ? (
+                                  <input
+                                    className="input"
+                                    style={{ width: 170 }}
+                                    placeholder="fără TVA"
+                                    value={netPurchaseEditById[it.id] ?? ""}
+                                    onChange={(e) =>
+                                      setNetPurchaseEditById((prev) => ({ ...prev, [it.id]: e.target.value }))
+                                    }
+                                    onBlur={() => void onCommitNetPurchase(it)}
+                                    disabled={savingNet}
+                                  />
+                                ) : (
+                                  "—"
+                                )}
+                              </td>
+                              <td style={{ fontWeight: 950 }}>
+                                {it.item_type === "part" ? (
+                                  moneyRON(it.net_total)
+                                ) : (
+                                  <input
+                                    className="input"
+                                    style={{ width: 170 }}
+                                    value={netTotalEditById[it.id] ?? String(it.net_total)}
+                                    onChange={(e) =>
+                                      setNetTotalEditById((prev) => ({ ...prev, [it.id]: e.target.value }))
+                                    }
+                                    onBlur={() => void onCommitNetTotal(it)}
+                                    disabled={savingNet}
+                                  />
+                                )}
+                              </td>
+                              <td>
+                                <button className="btn" type="button" onClick={() => void onDeleteNetItem(it.id)} disabled={savingNet}>
+                                  Șterge
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        })}
+
+                        {!loadingNet && netItems.length === 0 && (
+                          <tr>
+                            <td colSpan={7} className="muted">
+                              Nicio linie NET. Apasă “Importă…” sau “Adaugă”.
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+
+                    <div style={{ display: "grid", gap: 6, marginTop: 10 }}>
+                      <div className="row" style={{ justifyContent: "space-between" }}>
+                        <span className="muted">Manoperă (net)</span>
+                        <b>{moneyRON(netTotals.labor)}</b>
+                      </div>
+                      <div className="row" style={{ justifyContent: "space-between" }}>
+                        <span className="muted">Piese (profit)</span>
+                        <b>{moneyRON(netTotals.parts)}</b>
+                      </div>
+                      <div className="row" style={{ justifyContent: "space-between" }}>
+                        <span className="muted">Altele (profit direct)</span>
+                        <b>{moneyRON(netTotals.other)}</b>
+                      </div>
+                      <div className="row" style={{ justifyContent: "space-between", fontSize: 16 }}>
+                        <span style={{ fontWeight: 950 }}>TOTAL NET</span>
+                        <span style={{ fontWeight: 950 }}>{moneyRON(netTotals.total)}</span>
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
+
             </div>
           )}
         </div>
@@ -1265,6 +1753,106 @@ export default function JobsPage() {
           </div>
         </div>
       </Modal>
+
+
+      {/* Add NET item modal */}
+      <Modal open={openNetItem} title="Adaugă linie NET" onClose={() => setOpenNetItem(false)}>
+        <div style={{ display: "grid", gap: 10 }}>
+          <div className="grid2">
+            <div>
+              <div className="muted" style={{ marginBottom: 6 }}>Tip</div>
+              <select className="select" value={netItemType} onChange={(e) => setNetItemType(e.target.value as JobItemType)}>
+                <option value="labor">Manoperă</option>
+                <option value="part">Piesă</option>
+                <option value="other">Altceva</option>
+              </select>
+            </div>
+
+            <div>
+              <div className="muted" style={{ marginBottom: 6 }}>Cantitate</div>
+              <input className="input" value={netQty} onChange={(e) => setNetQty(e.target.value)} />
+            </div>
+          </div>
+
+          <div>
+            <div className="muted" style={{ marginBottom: 6 }}>Denumire</div>
+            <input className="input" value={netTitle} onChange={(e) => setNetTitle(e.target.value)} />
+          </div>
+
+          {netItemType === "part" ? (
+            <>
+              <div className="grid2">
+                <div>
+                  <div className="muted" style={{ marginBottom: 6 }}>Preț vânzare / unitate (RON)</div>
+                  <input className="input" value={netSaleUnitPrice} onChange={(e) => setNetSaleUnitPrice(e.target.value)} />
+                </div>
+                <div>
+                  <div className="muted" style={{ marginBottom: 6 }}>Cost achiziție / unitate (fără TVA) — opțional</div>
+                  <input
+                    className="input"
+                    placeholder="Lasă gol → profit 0"
+                    value={netPurchaseUnitCost}
+                    onChange={(e) => setNetPurchaseUnitCost(e.target.value)}
+                  />
+                </div>
+              </div>
+
+              <div className="grid2">
+                <div>
+                  <div className="muted" style={{ marginBottom: 6 }}>Profit / unitate</div>
+                  <div style={{ fontWeight: 950 }}>
+                    {(() => {
+                      const sale = Number((netSaleUnitPrice.trim() || "0").replace(",", "."));
+                      const raw = netPurchaseUnitCost.trim();
+                      if (!raw) return moneyRON(0);
+                      const purchase = Number(raw.replace(",", "."));
+                      if (!Number.isFinite(sale) || !Number.isFinite(purchase)) return moneyRON(0);
+                      return moneyRON(sale - purchase);
+                    })()}
+                  </div>
+                </div>
+                <div>
+                  <div className="muted" style={{ marginBottom: 6 }}>Subtotal (NET)</div>
+                  <div style={{ fontWeight: 950 }}>
+                    {(() => {
+                      const q = Number((netQty.trim() || "1").replace(",", "."));
+                      const sale = Number((netSaleUnitPrice.trim() || "0").replace(",", "."));
+                      const raw = netPurchaseUnitCost.trim();
+                      if (!raw) return moneyRON(0);
+                      const purchase = Number(raw.replace(",", "."));
+                      if (!Number.isFinite(q) || !Number.isFinite(sale) || !Number.isFinite(purchase)) return moneyRON(0);
+                      return moneyRON((sale - purchase) * q);
+                    })()}
+                  </div>
+                </div>
+              </div>
+            </>
+          ) : netItemType === "labor" ? (
+            <div className="grid2">
+              <div>
+                <div className="muted" style={{ marginBottom: 6 }}>Minute (opțional)</div>
+                <input className="input" value={netNormMinutes} onChange={(e) => setNetNormMinutes(e.target.value)} />
+              </div>
+              <div>
+                <div className="muted" style={{ marginBottom: 6 }}>Total NET (RON)</div>
+                <input className="input" value={netTotal} onChange={(e) => setNetTotal(e.target.value)} />
+              </div>
+            </div>
+          ) : (
+            <div>
+              <div className="muted" style={{ marginBottom: 6 }}>Total NET (RON)</div>
+              <input className="input" value={netTotal} onChange={(e) => setNetTotal(e.target.value)} />
+            </div>
+          )}
+
+          <div className="row" style={{ justifyContent: "flex-end" }}>
+            <button className="btn primary" disabled={savingNet} onClick={() => void onSaveNetItem()}>
+              {savingNet ? "Salvez…" : "Adaugă"}
+            </button>
+          </div>
+        </div>
+      </Modal>
+
     </div>
   );
 }
