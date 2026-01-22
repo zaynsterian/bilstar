@@ -86,6 +86,7 @@ export type JobItemRow = {
   unit_price: number;
   operation_id: string | null;
   norm_minutes: number | null;
+  labor_total_override: number | null;
   created_at: string;
   operation?: Pick<Operation, "id" | "code" | "name" | "category" | "norm_minutes"> | null;
 };
@@ -113,6 +114,7 @@ export type ReportJobRow = {
     qty: unknown;
     unit_price: unknown;
     norm_minutes: number | null;
+    labor_total_override: number | null;
     operation_id: string | null;
   }>;
 };
@@ -621,7 +623,7 @@ export async function listJobItems(jobId: string): Promise<JobItemRow[]> {
   const { data, error } = await supabase
     .from("job_items")
     .select(
-      "id, item_type, title, qty, unit_price, operation_id, norm_minutes, created_at, operation:operations(id, code, name, category, norm_minutes)",
+      "id, item_type, title, qty, unit_price, operation_id, norm_minutes, labor_total_override, created_at, operation:operations(id, code, name, category, norm_minutes)",
     )
     .eq("job_id", jobId)
     .order("created_at", { ascending: true });
@@ -637,6 +639,7 @@ export async function listJobItems(jobId: string): Promise<JobItemRow[]> {
     unit_price: toNumber(r.unit_price),
     operation_id: (r.operation_id as string | null) ?? null,
     norm_minutes: (r.norm_minutes as number | null) ?? null,
+    labor_total_override: r.labor_total_override == null ? null : toNumber(r.labor_total_override),
     created_at: String(r.created_at),
     operation: one<Pick<Operation, "id" | "code" | "name" | "category" | "norm_minutes">>((r.operation as any) ?? null),
   }));
@@ -651,6 +654,7 @@ export async function createJobItem(input: {
   unitPrice: number;
   operationId?: string | null;
   normMinutes?: number | null;
+  laborTotalOverride?: number | null;
 }): Promise<void> {
   const { error } = await supabase.from("job_items").insert({
     org_id: input.orgId,
@@ -661,6 +665,7 @@ export async function createJobItem(input: {
     unit_price: input.unitPrice,
     operation_id: input.operationId ?? null,
     norm_minutes: input.normMinutes ?? null,
+    labor_total_override: input.laborTotalOverride ?? null,
   });
 
   throwIfError(error);
@@ -723,7 +728,7 @@ export async function listFinishedJobsWithItemsBetween(
   const { data, error } = await supabase
     .from("jobs")
     .select(
-      "id, created_at, discount_value, customer:customers(id, name, phone, email), vehicle:vehicles(id, make, model, year, plate), items:job_items(id, item_type, title, qty, unit_price, norm_minutes, operation_id)",
+      "id, created_at, discount_value, customer:customers(id, name, phone, email), vehicle:vehicles(id, make, model, year, plate), items:job_items(id, item_type, title, qty, unit_price, norm_minutes, labor_total_override, operation_id)",
     )
     .eq("progress", "finished")
     .gte("created_at", startIso)

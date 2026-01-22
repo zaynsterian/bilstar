@@ -67,19 +67,31 @@ function moneyRON(amount: number) {
   return new Intl.NumberFormat("ro-RO", { style: "currency", currency: "RON" }).format(amount);
 }
 
+function calcJobItemSubtotal(it: JobItemRow, laborRatePerHour: number) {
+  if (it.item_type === "labor") {
+    const override = it.labor_total_override;
+    if (override != null && Number.isFinite(override)) return override;
+    const mins = (it.norm_minutes ?? 0) * (it.qty || 1);
+    return (laborRatePerHour * mins) / 60;
+  }
+
+  return (it.qty || 0) * (it.unit_price || 0);
+}
+
 function calcTotals(items: JobItemRow[], laborRatePerHour: number) {
   let labor = 0;
   let parts = 0;
   let other = 0;
 
   for (const it of items) {
+    const subtotalLine = calcJobItemSubtotal(it, laborRatePerHour);
+
     if (it.item_type === "labor") {
-      const mins = (it.norm_minutes ?? 0) * (it.qty || 1);
-      labor += (laborRatePerHour * mins) / 60;
+      labor += subtotalLine;
     } else if (it.item_type === "part") {
-      parts += (it.qty || 0) * (it.unit_price || 0);
+      parts += subtotalLine;
     } else {
-      other += (it.qty || 0) * (it.unit_price || 0);
+      other += subtotalLine;
     }
   }
 
@@ -148,6 +160,8 @@ export default function JobsPage() {
   const [itemQty, setItemQty] = useState("1");
   const [itemUnitPrice, setItemUnitPrice] = useState("0");
   const [itemNormMinutes, setItemNormMinutes] = useState("0");
+  const [itemLaborTotalOverride, setItemLaborTotalOverride] = useState("");
+  const [opSearch, setOpSearch] = useState("");
 
   const [discountValue, setDiscountValue] = useState("0");
   const [notesValue, setNotesValue] = useState("");
@@ -441,6 +455,8 @@ export default function JobsPage() {
     setItemQty("1");
     setItemUnitPrice("0");
     setItemNormMinutes("0");
+    setItemLaborTotalOverride("");
+    setOpSearch("");
   }
 
   function openAddItem() {
@@ -448,18 +464,6 @@ export default function JobsPage() {
     setOpenItem(true);
   }
 
-  useEffect(() => {
-    if (itemType !== "labor") return;
-    if (!opId) return;
-
-    const op = operations.find((o) => o.id === opId);
-    if (!op) return;
-
-    setItemTitle(op.name);
-    setItemNormMinutes(String(op.norm_minutes ?? 0));
-    setItemQty("1");
-    setItemUnitPrice("0");
-  }, [opId, itemType, operations]);
 
   async function onSaveItem() {
     if (!orgId) return;
@@ -473,9 +477,17 @@ export default function JobsPage() {
       if (!Number.isFinite(q) || q <= 0) throw new Error("Cantitate invalidă.");
 
       if (itemType === "labor") {
-        if (!opId) throw new Error("Selectează o operațiune.");
-        const mins = Number(itemNormMinutes);
+        const minsRaw = itemNormMinutes.trim() || "0";
+        const mins = Number(minsRaw.replace(',', '.'));
         if (!Number.isFinite(mins) || mins < 0) throw new Error("Minute invalide.");
+
+        const overrideRaw = itemLaborTotalOverride.trim();
+        let laborTotalOverride: number | null = null;
+        if (overrideRaw) {
+          const ov = Number(overrideRaw.replace(',', '.'));
+          if (!Number.isFinite(ov) || ov < 0) throw new Error("Total manoperă (override) invalid.");
+          laborTotalOverride = ov;
+        }
 
         await createJobItem({
           orgId,
@@ -484,11 +496,12 @@ export default function JobsPage() {
           title: itemTitle.trim() || "Manoperă",
           qty: q,
           unitPrice: 0,
-          operationId: opId,
+          operationId: opId ? opId : null,
           normMinutes: mins,
+          laborTotalOverride,
         });
       } else {
-        const price = Number(itemUnitPrice);
+        const price = Number((itemUnitPrice.trim() || "0").replace(",", "."));
         if (!Number.isFinite(price) || price < 0) throw new Error("Preț invalid.");
         if (!itemTitle.trim()) throw new Error("Denumirea este obligatorie.");
 
@@ -528,6 +541,36 @@ export default function JobsPage() {
   const discountNum = selectedJob ? (selectedJob.discount_value ?? 0) : 0;
   const grand = Math.max(0, totals.subtotal - discountNum);
 
+  const selectedOperation = useMemo(() => {
+    if (!opId) return null;
+    return operations.find((o) => o.id === opId) ?? null;
+  }, [operations, opId]);
+
+  const opMatches = useMemo(() => {
+    const q = opSearch.trim().toLowerCase();
+    if (!q) return [] as Operation[];
+    const hits = operations.filter((o) => {
+      const hay = `${o.code ?? ""} ${o.name ?? ""} ${o.category ?? ""}`.toLowerCase();
+      return hay.includes(q);
+    });
+    return hits.slice(0, 16);
+  }, [operations, opSearch]);
+
+  function applyOperation(op: Operation) {
+    setOpId(op.id);
+    setItemTitle(op.name);
+    setItemNormMinutes(String(op.norm_minutes ?? 0));
+    setItemQty("1");
+    setItemUnitPrice("0");
+    setItemLaborTotalOverride("");
+    setOpSearch("");
+  }
+
+  function clearOperation() {
+    setOpId("");
+    setOpSearch("");
+  }
+
   async function onExportPdf() {
     if (!selectedJob) return;
 
@@ -552,17 +595,16 @@ export default function JobsPage() {
     y += 12;
 
     const body = items.map((it, idx) => {
-      const subtotal =
-        it.item_type === "labor"
-          ? (laborRate * ((it.norm_minutes ?? 0) * (it.qty || 1))) / 60
-          : (it.qty || 0) * (it.unit_price || 0);
+      const subtotal = calcJobItemSubtotal(it, laborRate);
 
       return [
         String(idx + 1),
         it.item_type === "labor" ? "Manoperă" : it.item_type === "part" ? "Piese" : "Altele",
         it.title,
         String(it.qty ?? 0),
-        it.item_type === "labor" ? `${it.norm_minutes ?? 0} min/op` : moneyRON(it.unit_price ?? 0),
+        it.item_type === "labor"
+          ? (it.labor_total_override != null ? "Total manual" : `${it.norm_minutes ?? 0} min/op`)
+          : moneyRON(it.unit_price ?? 0),
         moneyRON(subtotal),
       ];
     });
@@ -797,10 +839,7 @@ export default function JobsPage() {
                   </thead>
                   <tbody>
                     {items.map((it) => {
-                      const subtotal =
-                        it.item_type === "labor"
-                          ? (laborRate * ((it.norm_minutes ?? 0) * (it.qty || 1))) / 60
-                          : (it.qty || 0) * (it.unit_price || 0);
+                      const subtotal = calcJobItemSubtotal(it, laborRate);
 
                       return (
                         <tr key={it.id}>
@@ -808,7 +847,14 @@ export default function JobsPage() {
                           <td style={{ fontWeight: 850 }}>
                             {it.title}
                             {it.item_type === "labor" && (
-                              <div className="muted">{it.norm_minutes ?? 0} min/op</div>
+                              <div className="muted">
+                                {it.norm_minutes ?? 0} min/op
+                                {it.labor_total_override != null && (
+                                  <>
+                                    {" "}• Total manual: <b>{moneyRON(it.labor_total_override)}</b>
+                                  </>
+                                )}
+                              </div>
                             )}
                           </td>
                           <td>{it.qty}</td>
@@ -1090,15 +1136,74 @@ export default function JobsPage() {
           {itemType === "labor" ? (
             <>
               <div>
-                <div className="muted" style={{ marginBottom: 6 }}>Operațiune (din normativ)</div>
-                <select className="select" value={opId} onChange={(e) => setOpId(e.target.value)}>
-                  <option value="">Selectează…</option>
-                  {operations.map((o) => (
-                    <option key={o.id} value={o.id}>
-                      {(o.code ? `${o.code} — ` : "") + o.name} ({o.norm_minutes} min)
-                    </option>
-                  ))}
-                </select>
+                <div className="muted" style={{ marginBottom: 6 }}>
+                  Operațiune (opțional) — din normativ
+                </div>
+
+                {opId && (
+                  <div className="row" style={{ justifyContent: "space-between", marginBottom: 8 }}>
+                    <div>
+                      <div style={{ fontWeight: 900 }}>
+                        {(selectedOperation?.code ? `${selectedOperation.code} — ` : "") + (selectedOperation?.name ?? "Operațiune")}
+                      </div>
+                      <div className="muted">
+                        {selectedOperation?.category ?? ""} {selectedOperation ? `• ${selectedOperation.norm_minutes} min` : ""}
+                      </div>
+                    </div>
+                    <button className="btn" type="button" onClick={clearOperation} title="Șterge selecția din normativ">
+                      X / Clear
+                    </button>
+                  </div>
+                )}
+
+                <div style={{ display: "grid", gap: 8 }}>
+                  <input
+                    className="input"
+                    placeholder={opId ? "Caută pentru a schimba operațiunea…" : "Caută după cod / denumire / categorie…"}
+                    value={opSearch}
+                    onChange={(e) => setOpSearch(e.target.value)}
+                  />
+
+                  {opSearch.trim() ? (
+                    <div className="card card-pad" style={{ boxShadow: "none", padding: 10 }}>
+                      {opMatches.length === 0 ? (
+                        <div className="muted">Niciun rezultat.</div>
+                      ) : (
+                        <div style={{ display: "grid", gap: 6 }}>
+                          {opMatches.map((o) => (
+                            <button
+                              key={o.id}
+                              className="btn"
+                              type="button"
+                              style={{ justifyContent: "space-between", display: "flex", width: "100%" }}
+                              onClick={() => applyOperation(o)}
+                            >
+                              <span style={{ textAlign: "left" }}>
+                                <div style={{ fontWeight: 900 }}>
+                                  {(o.code ? `${o.code} — ` : "") + o.name}
+                                </div>
+                                <div className="muted" style={{ fontSize: 12 }}>
+                                  {o.category ?? ""}
+                                </div>
+                              </span>
+                              <span className="badge">{o.norm_minutes} min</span>
+                            </button>
+                          ))}
+
+                          {opMatches.length === 16 && (
+                            <div className="muted" style={{ fontSize: 12 }}>
+                              Sunt mai multe rezultate. Rafinează căutarea.
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="muted" style={{ fontSize: 12 }}>
+                      Poți lăsa necompletat pentru manoperă manuală. {opId ? "(sau caută mai sus pentru a schimba operațiunea)" : ""}
+                    </div>
+                  )}
+                </div>
               </div>
 
               <div className="grid2">
@@ -1112,8 +1217,31 @@ export default function JobsPage() {
                 </div>
               </div>
 
+              <div className="grid2">
+                <div>
+                  <div className="muted" style={{ marginBottom: 6 }}>Total manoperă (RON) — opțional</div>
+                  <input
+                    className="input"
+                    placeholder="Lasă gol pentru calcul automat"
+                    value={itemLaborTotalOverride}
+                    onChange={(e) => setItemLaborTotalOverride(e.target.value)}
+                  />
+                </div>
+                <div>
+                  <div className="muted" style={{ marginBottom: 6 }}>Subtotal estimat</div>
+                  <div style={{ fontWeight: 950, paddingTop: 10 }}>
+                    {moneyRON(
+                      itemLaborTotalOverride.trim()
+                        ? Number(itemLaborTotalOverride.trim().replace(',', '.')) || 0
+                        : (laborRate * ((Number(itemNormMinutes.trim().replace(',', '.')) || 0) * (Number(itemQty) || 1))) / 60,
+                    )}
+                  </div>
+                </div>
+              </div>
+
               <div className="muted">
-                Costul manoperei se calculează automat după tarif: <b>{moneyRON(laborRate)}</b> / oră.
+                Dacă completezi <b>Total manoperă</b>, subtotalul liniei devine acel total (override). Dacă lași gol,
+                se calculează automat după tarif: <b>{moneyRON(laborRate)}</b> / oră.
               </div>
             </>
           ) : (
