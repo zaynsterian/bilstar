@@ -420,15 +420,17 @@ export default function CalendarPage() {
       if (!model) throw new Error("Modelul este obligatoriu.");
 
       const yearTrim = vYear.trim();
-      const year = yearTrim ? Number(yearTrim) : undefined;
-      if (yearTrim && (!Number.isFinite(year) || year < 1900 || year > 2100)) throw new Error("An invalid.");
+      // Keep a stable numeric value here so TypeScript doesn't complain about "possibly undefined"
+      // when validating (we still treat empty input as "no year").
+      const yearNum = yearTrim ? Math.round(Number(yearTrim)) : NaN;
+      if (yearTrim && (!Number.isFinite(yearNum) || yearNum < 1900 || yearNum > 2100)) throw new Error("An invalid.");
 
       const created = await createVehicle({
         orgId,
         customerId: targetCustomerId,
         make,
         model,
-        year: yearTrim ? Math.round(year!) : undefined,
+        year: yearTrim ? yearNum : undefined,
         plate: vPlate.trim() || undefined,
       });
 

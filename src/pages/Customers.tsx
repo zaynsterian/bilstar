@@ -294,7 +294,7 @@ export default function CustomersPage() {
                             {j.appointment_id && (
                               <button
                                 className="btn"
-                                onClick={() => nav(`/calendar?appointment=${encodeURIComponent(j.appointment_id)}`)}
+                                onClick={() => nav(`/calendar?appointment=${encodeURIComponent(j.appointment_id!)}`)}
                               >
                                 Programare
                               </button>
