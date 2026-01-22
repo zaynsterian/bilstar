@@ -362,6 +362,50 @@ export async function createVehicle(input: {
   return data as Vehicle;
 }
 
+export async function updateCustomer(
+  customerId: string,
+  patch: { name?: string; phone?: string | null; email?: string | null },
+): Promise<Customer> {
+  const update: any = {};
+  if (patch.name !== undefined) update.name = patch.name;
+  if (patch.phone !== undefined) update.phone = patch.phone;
+  if (patch.email !== undefined) update.email = patch.email;
+
+  const { data, error } = await supabase
+    .from("customers")
+    .update(update)
+    .eq("id", customerId)
+    .select("id, name, phone, email")
+    .single();
+
+  throwIfError(error);
+  if (!data) throw new Error("Failed to update customer");
+  return data as Customer;
+}
+
+export async function updateVehicle(
+  vehicleId: string,
+  patch: { make?: string | null; model?: string | null; year?: number | null; plate?: string | null },
+): Promise<Vehicle> {
+  const update: any = {};
+  if (patch.make !== undefined) update.make = patch.make;
+  if (patch.model !== undefined) update.model = patch.model;
+  if (patch.year !== undefined) update.year = patch.year;
+  if (patch.plate !== undefined) update.plate = patch.plate;
+
+  const { data, error } = await supabase
+    .from("vehicles")
+    .update(update)
+    .eq("id", vehicleId)
+    .select("id, make, model, year, plate")
+    .single();
+
+  throwIfError(error);
+  if (!data) throw new Error("Failed to update vehicle");
+  return data as Vehicle;
+}
+
+
 /** ================= APPOINTMENTS ================= */
 
 export async function listAppointmentsBetween(

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import Modal from "../components/Modal";
 import {
   AppointmentRow,
   AppointmentStatus,
@@ -11,6 +12,8 @@ import {
   listCustomers,
   listJobsByCustomer,
   listVehiclesByCustomer,
+  updateCustomer,
+  updateVehicle,
 } from "../lib/db";
 
 const TIME_ZONE = "Europe/Bucharest";
@@ -77,6 +80,113 @@ export default function CustomersPage() {
   const [loadingCustomers, setLoadingCustomers] = useState(false);
   const [loadingDetails, setLoadingDetails] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+
+  const [editCustomerOpen, setEditCustomerOpen] = useState(false);
+  const [editCustomerName, setEditCustomerName] = useState("");
+  const [editCustomerPhone, setEditCustomerPhone] = useState("");
+  const [editCustomerEmail, setEditCustomerEmail] = useState("");
+  const [savingCustomer, setSavingCustomer] = useState(false);
+
+  const [editVehicleOpen, setEditVehicleOpen] = useState(false);
+  const [editingVehicle, setEditingVehicle] = useState<Vehicle | null>(null);
+  const [editVehicleMake, setEditVehicleMake] = useState("");
+  const [editVehicleModel, setEditVehicleModel] = useState("");
+  const [editVehicleYear, setEditVehicleYear] = useState("");
+  const [editVehiclePlate, setEditVehiclePlate] = useState("");
+  const [savingVehicle, setSavingVehicle] = useState(false);
+
+  const [modalErr, setModalErr] = useState<string | null>(null);
+
+  function openEditCustomer() {
+    if (!selectedCustomer) return;
+    setModalErr(null);
+    setEditCustomerName(selectedCustomer.name ?? "");
+    setEditCustomerPhone(selectedCustomer.phone ?? "");
+    setEditCustomerEmail(selectedCustomer.email ?? "");
+    setEditCustomerOpen(true);
+  }
+
+  function openEditVehicle(v: Vehicle) {
+    setModalErr(null);
+    setEditingVehicle(v);
+    setEditVehicleMake(v.make ?? "");
+    setEditVehicleModel(v.model ?? "");
+    setEditVehicleYear(v.year == null ? "" : String(v.year));
+    setEditVehiclePlate(v.plate ?? "");
+    setEditVehicleOpen(true);
+  }
+
+  function isValidEmail(email: string) {
+    // Simple, safe validation
+    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+  }
+
+  async function saveCustomerEdits() {
+    if (!selectedCustomer) return;
+    setModalErr(null);
+    setSavingCustomer(true);
+    try {
+      const name = editCustomerName.trim();
+      if (!name) throw new Error("Numele este obligatoriu.");
+
+      const phoneTrim = editCustomerPhone.trim();
+      const emailTrim = editCustomerEmail.trim();
+
+      if (emailTrim && !isValidEmail(emailTrim)) throw new Error("Email invalid.");
+
+      await updateCustomer(selectedCustomer.id, {
+        name,
+        phone: phoneTrim ? phoneTrim : null,
+        email: emailTrim ? emailTrim : null,
+      });
+
+      await refreshCustomers();
+      await refreshDetails(selectedCustomer.id);
+      setEditCustomerOpen(false);
+    } catch (e) {
+      setModalErr(e instanceof Error ? e.message : "Eroare la salvarea clientului");
+    } finally {
+      setSavingCustomer(false);
+    }
+  }
+
+  async function saveVehicleEdits() {
+    if (!editingVehicle) return;
+    setModalErr(null);
+    setSavingVehicle(true);
+    try {
+      const make = editVehicleMake.trim();
+      const model = editVehicleModel.trim();
+      if (!make) throw new Error("Marca este obligatorie.");
+      if (!model) throw new Error("Modelul este obligatoriu.");
+
+      const yearTrim = editVehicleYear.trim();
+      const yearNum = yearTrim ? Math.round(Number(yearTrim)) : NaN;
+      if (yearTrim && (!Number.isFinite(yearNum) || yearNum < 1900 || yearNum > 2100)) {
+        throw new Error("An invalid.");
+      }
+
+      const plateTrim = editVehiclePlate.trim();
+
+      await updateVehicle(editingVehicle.id, {
+        make,
+        model,
+        year: yearTrim ? yearNum : null,
+        plate: plateTrim ? plateTrim : null,
+      });
+
+      if (selectedCustomer) {
+        await refreshDetails(selectedCustomer.id);
+      }
+
+      setEditVehicleOpen(false);
+      setEditingVehicle(null);
+    } catch (e) {
+      setModalErr(e instanceof Error ? e.message : "Eroare la salvarea vehiculului");
+    } finally {
+      setSavingVehicle(false);
+    }
+  }
 
   async function refreshCustomers() {
     setErr(null);
@@ -151,7 +261,8 @@ export default function CustomersPage() {
   }, [customers, query]);
 
   return (
-    <div>
+    <>
+      <div>
       <div className="page-header">
         <div>
           <div className="h1">Clienți</div>
@@ -222,6 +333,7 @@ export default function CustomersPage() {
                 </div>
 
                 <div className="row">
+                  <button className="btn" onClick={() => openEditCustomer()} disabled={!selectedCustomer}>Editează</button>
                   <span className="badge">{orgId ? "Org OK" : "—"}</span>
                 </div>
               </div>
@@ -241,6 +353,7 @@ export default function CustomersPage() {
                       <th>Vehicul</th>
                       <th style={{ width: 120 }}>An</th>
                       <th style={{ width: 180 }}>Număr</th>
+                      <th style={{ width: 140 }}>Acțiuni</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -249,11 +362,14 @@ export default function CustomersPage() {
                         <td>{[v.make, v.model].filter(Boolean).join(" ") || "Vehicul"}</td>
                         <td>{v.year ?? "—"}</td>
                         <td>{v.plate ?? "—"}</td>
+                        <td>
+                          <button className="btn" onClick={() => openEditVehicle(v)}>Editează</button>
+                        </td>
                       </tr>
                     ))}
                     {!loadingDetails && vehicles.length === 0 && (
                       <tr>
-                        <td colSpan={3} className="muted">
+                        <td colSpan={4} className="muted">
                           Nu există vehicule pentru acest client.
                         </td>
                       </tr>
@@ -366,5 +482,102 @@ export default function CustomersPage() {
         </div>
       </div>
     </div>
+
+      <Modal open={editCustomerOpen} title="Editează client" onClose={() => setEditCustomerOpen(false)}>
+        {modalErr && (
+          <div className="card card-pad" style={{ borderColor: "rgba(220,38,38,0.35)", marginBottom: 12 }}>
+            <div style={{ color: "crimson", fontWeight: 900 }}>{modalErr}</div>
+          </div>
+        )}
+
+        <div className="grid2">
+          <div>
+            <div className="muted" style={{ marginBottom: 4 }}>
+              Nume *
+            </div>
+            <input className="input" value={editCustomerName} onChange={(e) => setEditCustomerName(e.target.value)} />
+          </div>
+
+          <div>
+            <div className="muted" style={{ marginBottom: 4 }}>
+              Telefon
+            </div>
+            <input className="input" value={editCustomerPhone} onChange={(e) => setEditCustomerPhone(e.target.value)} />
+          </div>
+
+          <div style={{ gridColumn: "1 / -1" }}>
+            <div className="muted" style={{ marginBottom: 4 }}>
+              Email
+            </div>
+            <input className="input" value={editCustomerEmail} onChange={(e) => setEditCustomerEmail(e.target.value)} />
+          </div>
+        </div>
+
+        <div className="row" style={{ justifyContent: "flex-end", marginTop: 12 }}>
+          <button className="btn" onClick={() => setEditCustomerOpen(false)} disabled={savingCustomer}>
+            Anulează
+          </button>
+          <button className="btn primary" onClick={() => void saveCustomerEdits()} disabled={savingCustomer}>
+            {savingCustomer ? "Se salvează…" : "Salvează"}
+          </button>
+        </div>
+      </Modal>
+
+      <Modal open={editVehicleOpen} title="Editează vehicul" onClose={() => { setEditVehicleOpen(false); setEditingVehicle(null); }}>
+        {modalErr && (
+          <div className="card card-pad" style={{ borderColor: "rgba(220,38,38,0.35)", marginBottom: 12 }}>
+            <div style={{ color: "crimson", fontWeight: 900 }}>{modalErr}</div>
+          </div>
+        )}
+
+        <div className="grid2">
+          <div>
+            <div className="muted" style={{ marginBottom: 4 }}>
+              Marca *
+            </div>
+            <input className="input" value={editVehicleMake} onChange={(e) => setEditVehicleMake(e.target.value)} />
+          </div>
+
+          <div>
+            <div className="muted" style={{ marginBottom: 4 }}>
+              Model *
+            </div>
+            <input className="input" value={editVehicleModel} onChange={(e) => setEditVehicleModel(e.target.value)} />
+          </div>
+
+          <div>
+            <div className="muted" style={{ marginBottom: 4 }}>
+              An
+            </div>
+            <input className="input" value={editVehicleYear} onChange={(e) => setEditVehicleYear(e.target.value)} />
+          </div>
+
+          <div>
+            <div className="muted" style={{ marginBottom: 4 }}>
+              Număr
+            </div>
+            <input className="input" value={editVehiclePlate} onChange={(e) => setEditVehiclePlate(e.target.value)} />
+          </div>
+        </div>
+
+        <div className="row" style={{ justifyContent: "flex-end", marginTop: 12 }}>
+          <button
+            className="btn"
+            onClick={() => {
+              setEditVehicleOpen(false);
+              setEditingVehicle(null);
+            }}
+            disabled={savingVehicle}
+          >
+            Anulează
+          </button>
+          <button className="btn primary" onClick={() => void saveVehicleEdits()} disabled={savingVehicle}>
+            {savingVehicle ? "Se salvează…" : "Salvează"}
+          </button>
+        </div>
+      </Modal>
+
+    </>
+
   );
 }
