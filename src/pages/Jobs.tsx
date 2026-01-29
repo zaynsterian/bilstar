@@ -4,6 +4,7 @@ import { jsPDF } from "jspdf";
 import autoTable from "jspdf-autotable";
 import Modal from "../components/Modal";
 import { supabase } from "../lib/supabase";
+import { ensurePdfFonts } from "../lib/pdfFonts";
 import {
   AppointmentRow,
   Customer,
@@ -905,21 +906,22 @@ export default function JobsPage() {
     if (!selectedJob) return;
 
     const doc = new jsPDF({ unit: "pt", format: "a4" });
+    // Embed a Unicode-capable font so Romanian diacritics render correctly.
+    await ensurePdfFonts(doc);
+
     const marginX = 40;
     let y = 40;
 
-    doc.setFont("helvetica", "bold");
+    doc.setFont("DejaVuSans", "bold");
     doc.setFontSize(16);
-    doc.text("Bilstar Service - Deviz", marginX, y);
+    doc.text("BEST GARAGE Service - Deviz", marginX, y);
     y += 18;
 
-    doc.setFont("helvetica", "normal");
+    doc.setFont("DejaVuSans", "normal");
     doc.setFontSize(11);
     doc.text(`Client: ${selectedJob.customer.name}`, marginX, y);
     y += 14;
     doc.text(`Vehicul: ${vehicleLabel(selectedJob.vehicle)}`, marginX, y);
-    y += 14;
-    doc.text(`Stadiu: ${PROGRESS_LABEL[selectedJob.progress]}`, marginX, y);
     y += 14;
     doc.text(`Data: ${fmtDateTime(selectedJob.created_at)}`, marginX, y);
     y += 12;
@@ -932,19 +934,18 @@ export default function JobsPage() {
         it.item_type === "labor" ? "Manoperă" : it.item_type === "part" ? "Piese" : "Altele",
         it.title,
         String(it.qty ?? 0),
-        it.item_type === "labor"
-          ? (it.labor_total_override != null ? "Total manual" : `${it.norm_minutes ?? 0} min/op`)
-          : moneyRON(it.unit_price ?? 0),
+        // Match UI: for labor we don't show a per-unit price in the PDF, only the subtotal.
+        it.item_type === "labor" ? "—" : moneyRON(it.unit_price ?? 0),
         moneyRON(subtotal),
       ];
     });
 
     (autoTable as any)(doc, {
       startY: y + 10,
-      head: [["#", "Tip", "Denumire", "Qty", "Preț", "Subtotal"]],
+      head: [["#", "Tip", "Denumire", "Qty", "Preț / unitate", "Subtotal"]],
       body,
-      styles: { font: "helvetica", fontSize: 9, cellPadding: 4 },
-      headStyles: { fillColor: [15, 23, 42] },
+      styles: { font: "DejaVuSans", fontSize: 9, cellPadding: 4 },
+      headStyles: { fillColor: [15, 23, 42], fontStyle: "bold", font: "DejaVuSans" },
       margin: { left: marginX, right: marginX },
     });
 
@@ -953,7 +954,7 @@ export default function JobsPage() {
     const discount = selectedJob.discount_value ?? 0;
     const grandTotal = Math.max(0, totals.subtotal - discount);
 
-    doc.setFont("helvetica", "bold");
+    doc.setFont("DejaVuSans", "bold");
     doc.text(`Manoperă: ${moneyRON(totals.labor)}`, marginX, y2);
     y2 += 14;
     doc.text(`Piese: ${moneyRON(totals.parts)}`, marginX, y2);
@@ -969,7 +970,7 @@ export default function JobsPage() {
 
     if ((selectedJob.notes ?? "").trim()) {
       doc.setFontSize(10);
-      doc.setFont("helvetica", "normal");
+      doc.setFont("DejaVuSans", "normal");
       y2 += 22;
       doc.text("Note:", marginX, y2);
       y2 += 12;
