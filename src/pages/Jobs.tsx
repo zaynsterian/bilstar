@@ -3,6 +3,9 @@ import { useSearchParams } from "react-router-dom";
 import { jsPDF } from "jspdf";
 import autoTable from "jspdf-autotable";
 import { ensurePdfFonts } from "../lib/pdfFonts";
+import qrInstagramSvg from "../assets/pdf/qr_instagram.svg?raw";
+import qrWhatsappSvg from "../assets/pdf/qr_whatsapp.svg?raw";
+import watermarkLogoSvg from "../assets/pdf/watermark_logo.svg?raw";
 import Modal from "../components/Modal";
 import { supabase } from "../lib/supabase";
 import {
@@ -73,6 +76,52 @@ function fmtDateTime(iso: string) {
 
 function moneyRON(amount: number) {
   return new Intl.NumberFormat("ro-RO", { style: "currency", currency: "RON" }).format(amount);
+}
+
+function svgAspectRatio(svg: string) {
+  const viewBoxMatch = svg.match(/viewBox\s*=\s*["']([\d.\-]+)\s+([\d.\-]+)\s+([\d.\-]+)\s+([\d.\-]+)["']/i);
+  if (viewBoxMatch) {
+    const w = Number(viewBoxMatch[3]);
+    const h = Number(viewBoxMatch[4]);
+    if (Number.isFinite(w) && Number.isFinite(h) && w > 0 && h > 0) return w / h;
+  }
+
+  const wMatch = svg.match(/width\s*=\s*["']([\d.]+)(px)?["']/i);
+  const hMatch = svg.match(/height\s*=\s*["']([\d.]+)(px)?["']/i);
+  if (wMatch && hMatch) {
+    const w = Number(wMatch[1]);
+    const h = Number(hMatch[1]);
+    if (Number.isFinite(w) && Number.isFinite(h) && w > 0 && h > 0) return w / h;
+  }
+
+  return 1;
+}
+
+async function svgToPngDataUrl(svg: string, width: number, height: number, scale = 3): Promise<string> {
+  const blob = new Blob([svg], { type: "image/svg+xml;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+
+  try {
+    const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const i = new Image();
+      i.onload = () => resolve(i);
+      i.onerror = () => reject(new Error("Nu pot încărca SVG pentru PDF."));
+      i.src = url;
+    });
+
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(width * scale));
+    canvas.height = Math.max(1, Math.round(height * scale));
+
+    const ctx = canvas.getContext("2d");
+    if (!ctx) throw new Error("Canvas indisponibil.");
+
+    ctx.setTransform(scale, 0, 0, scale, 0, 0);
+    ctx.drawImage(img, 0, 0, width, height);
+    return canvas.toDataURL("image/png");
+  } finally {
+    URL.revokeObjectURL(url);
+  }
 }
 
 function titleKey(s: string) {
@@ -909,22 +958,50 @@ export default function JobsPage() {
     // Embed a Unicode-capable font so Romanian diacritics render correctly.
     await ensurePdfFonts(doc);
 
+    const pageW = doc.internal.pageSize.getWidth();
+    const pageH = doc.internal.pageSize.getHeight();
     const marginX = 40;
-    let y = 40;
+    const tableRight = pageW - marginX;
 
+    // --- Header (title + info)
+    let y = 40;
     doc.setFont("DejaVuSans", "bold");
     doc.setFontSize(16);
     doc.text("BEST GARAGE Service - Deviz", marginX, y);
+
+    const infoGap = 14;
     y += 18;
+    const yInfoStart = y;
 
     doc.setFont("DejaVuSans", "normal");
     doc.setFontSize(11);
     doc.text(`Client: ${selectedJob.customer.name}`, marginX, y);
-    y += 14;
-    doc.text(`Vehicul: ${vehicleLabel(selectedJob.vehicle)}`, marginX, y);
-    y += 14;
-    doc.text(`Data: ${fmtDateTime(selectedJob.created_at)}`, marginX, y);
-    y += 12;
+    doc.text(`Vehicul: ${vehicleLabel(selectedJob.vehicle)}`, marginX, y + infoGap);
+    doc.text(`Data: ${fmtDateTime(selectedJob.created_at)}`, marginX, y + infoGap * 2);
+
+    // --- QRs (60x60), aligned with the info block.
+    const qrSize = 60;
+    const qrBottom = (yInfoStart - 2) + qrSize;
+    try {
+      const qrGap = 10;
+      const xInstagram = tableRight - qrSize;
+      const xWhatsapp = xInstagram - qrGap - qrSize;
+      const yQr = yInfoStart - 2;
+
+      // NOTE: Frame 10 = WhatsApp (decodes to wa.me), Frame 11 = Instagram.
+      const [waPng, igPng] = await Promise.all([
+        svgToPngDataUrl(qrWhatsappSvg, qrSize, qrSize, 5),
+        svgToPngDataUrl(qrInstagramSvg, qrSize, qrSize, 5),
+      ]);
+
+      doc.addImage(waPng, "PNG", xWhatsapp, yQr, qrSize, qrSize);
+      doc.addImage(igPng, "PNG", xInstagram, yQr, qrSize, qrSize);
+    } catch {
+      // Best-effort: if QR rendering fails, still export the PDF.
+    }
+
+    // Space after header (ensure table starts below QRs)
+    y = Math.max(yInfoStart + infoGap * 2, qrBottom) + 12;
 
     const body = items.map((it, idx) => {
       const subtotal = calcJobItemSubtotal(it, laborRate);
@@ -944,79 +1021,120 @@ export default function JobsPage() {
       startY: y + 10,
       head: [["#", "Tip", "Denumire", "Qty", "Preț / unitate", "Subtotal"]],
       body,
-      styles: { font: "DejaVuSans", fontSize: 9, cellPadding: 4, minCellHeight: 18 },
+      styles: { font: "DejaVuSans", fontSize: 9, cellPadding: 4, minCellHeight: 20 },
       headStyles: { fillColor: [15, 23, 42], fontStyle: "bold", font: "DejaVuSans" },
       margin: { left: marginX, right: marginX },
     });
+
     const tableEndY = (doc as any).lastAutoTable?.finalY ?? (y + 10);
-
-    // Totals: align to the right, under the table (so values line up with the "Subtotal" column).
-    const pageW = doc.internal.pageSize.getWidth();
-    const pageH = doc.internal.pageSize.getHeight();
-
-    // Discount is stored as a positive number to subtract. Treat tiny values as 0 (avoid "-0,00").
-    const discountRaw = selectedJob.discount_value ?? 0;
-    const discount = Math.abs(discountRaw) < 0.005 ? 0 : discountRaw;
-    const hasDiscount = discount !== 0;
-
+    const discount = selectedJob.discount_value ?? 0;
+    const hasDiscount = Math.abs(discount) >= 0.01;
     const grandTotal = Math.max(0, totals.subtotal - discount);
 
-    const xRight = pageW - marginX;
-    const xLabel = xRight - 220;
+    // --- Totals (right aligned under Subtotal column)
+    const totalsTop = tableEndY + 30;
     const lineH = 14;
 
-    // Reserve space at the bottom for the signature block.
-    const signatureReserve = 110;
-
-    const detailLines = 2 + (hasDiscount ? 2 : 0); // manoperă + piese (+ subtotal/discount if needed)
-    const blockH = detailLines * lineH + 20 + 18; // details + spacing + TOTAL line
-
-    let y2 = tableEndY + 30;
-
-    // If we don't have enough vertical space, move totals + signature to a new page.
-    if (y2 + blockH > pageH - signatureReserve) {
+    // If we don't have enough room for totals + signature, move to a new page.
+    const signatureLineY = pageH - 55;
+    const estTotalsHeight = (hasDiscount ? 5 : 3) * lineH + 16;
+    let totalsOnNewPage = false;
+    if (totalsTop + estTotalsHeight > signatureLineY - 80) {
       doc.addPage();
-      y2 = 70;
+      totalsOnNewPage = true;
     }
+
+    const activePageH = doc.internal.pageSize.getHeight();
+    const activePageW = doc.internal.pageSize.getWidth();
+    const activeTableRight = activePageW - marginX;
+
+    // On a fresh page (no table), place totals comfortably below the header area.
+    let yTot = totalsOnNewPage ? 140 : totalsTop;
+
+    const labelX2 = activeTableRight - 120;
+    const valueX2 = activeTableRight;
 
     doc.setFont("DejaVuSans", "bold");
     doc.setFontSize(11);
 
-    const drawTotalLine = (label: string, value: string, yy: number) => {
-      doc.text(label, xLabel, yy);
-      doc.text(value, xRight, yy, { align: "right" });
-    };
-
-    // Keep the breakdown (without "Altele" per request)
-    drawTotalLine("Manoperă:", moneyRON(totals.labor), y2);
-    y2 += lineH;
-    drawTotalLine("Piese:", moneyRON(totals.parts), y2);
-    y2 += lineH;
+    doc.text("Manoperă:", labelX2, yTot, { align: "right" });
+    doc.text(moneyRON(totals.labor), valueX2, yTot, { align: "right" });
+    yTot += lineH;
+    doc.text("Piese:", labelX2, yTot, { align: "right" });
+    doc.text(moneyRON(totals.parts), valueX2, yTot, { align: "right" });
 
     if (hasDiscount) {
-      drawTotalLine("Subtotal:", moneyRON(totals.subtotal), y2);
-      y2 += lineH;
-
-      const discountText = discount >= 0 ? `-${moneyRON(discount)}` : moneyRON(discount);
-      drawTotalLine("Discount:", discountText, y2);
-      y2 += lineH;
+      yTot += 8;
+      doc.text("Subtotal:", labelX2, yTot, { align: "right" });
+      doc.text(moneyRON(totals.subtotal), valueX2, yTot, { align: "right" });
+      yTot += lineH;
+      doc.text("Discount:", labelX2, yTot, { align: "right" });
+      doc.text(`-${moneyRON(discount)}`, valueX2, yTot, { align: "right" });
+      yTot += 12;
+    } else {
+      yTot += 12;
     }
 
-    y2 += 10;
     doc.setFontSize(13);
-    drawTotalLine("TOTAL:", moneyRON(grandTotal), y2);
+    doc.text("TOTAL:", labelX2, yTot, { align: "right" });
+    doc.text(moneyRON(grandTotal), valueX2, yTot, { align: "right" });
+    const yTotalsBottom = yTot + 6;
 
-    // Signature area: bottom-right of the page.
-    const signY = pageH - 80;
-    doc.setFont("DejaVuSans", "bold");
+    // --- Signature (bottom-right)
+    const websiteY = activePageH - 20;
+    const sigLineY = activePageH - 55;
+    const sigLineW = 180;
+    const sigX2 = activeTableRight;
+    const sigX1 = sigX2 - sigLineW;
+
+    doc.setFont("DejaVuSans", "normal");
     doc.setFontSize(11);
-    doc.text("Semnătura:", xRight, signY, { align: "right" });
-
-    // A simple signature line (space below for stamp/signature).
-    const signLineW = 190;
-    doc.setDrawColor(0);
+    doc.text("Semnătura:", sigX2, sigLineY - 10, { align: "right" });
     doc.setLineWidth(0.8);
-    doc.line(xRight - signLineW, signY + 18, xRight, signY + 18);
+    doc.line(sigX1, sigLineY, sigX2, sigLineY);
+
+    // --- Website (bottom center)
+    doc.text("www.bilstar.ro", activePageW / 2, websiteY, { align: "center" });
+
+    // --- Watermark logo centered between TOTAL and signature
+    try {
+      const upper = yTotalsBottom;
+      const lower = sigLineY - 24;
+      const available = lower - upper;
+
+      if (available > 40) {
+        const ratio = svgAspectRatio(watermarkLogoSvg) || 1;
+        let wmW = activePageW - 100; // ~50px margins
+        let wmH = wmW / ratio;
+
+        const minGap = 10;
+        if (wmH > available - 2 * minGap) {
+          wmH = Math.max(40, available - 2 * minGap);
+          wmW = wmH * ratio;
+        }
+
+        const maxGap = Math.max(minGap, (available - wmH) / 2);
+        const gap = Math.max(minGap, Math.floor(maxGap / 10) * 10);
+        const wmX = (activePageW - wmW) / 2;
+        const wmY = upper + gap;
+
+        const png = await svgToPngDataUrl(watermarkLogoSvg, wmW, wmH, 2);
+
+        // Apply transparency if supported by jsPDF.
+        const GState = (doc as any).GState;
+        if (GState && typeof (doc as any).setGState === "function") {
+          (doc as any).setGState(new GState({ opacity: 0.12 }));
+        }
+
+        doc.addImage(png, "PNG", wmX, wmY, wmW, wmH);
+
+        if (GState && typeof (doc as any).setGState === "function") {
+          (doc as any).setGState(new GState({ opacity: 1 }));
+        }
+      }
+    } catch {
+      // Best-effort watermark.
+    }
 
     // Notes are intentionally excluded from the exported PDF.
 
