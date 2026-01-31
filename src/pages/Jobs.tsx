@@ -1123,7 +1123,7 @@ export default function JobsPage() {
         // Apply transparency if supported by jsPDF.
         const GState = (doc as any).GState;
         if (GState && typeof (doc as any).setGState === "function") {
-          (doc as any).setGState(new GState({ opacity: 0.12 }));
+          (doc as any).setGState(new GState({ opacity: 0.25 }));
         }
 
         doc.addImage(png, "PNG", wmX, wmY, wmW, wmH);
