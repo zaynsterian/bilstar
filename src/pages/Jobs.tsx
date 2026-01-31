@@ -2,9 +2,9 @@ import { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { jsPDF } from "jspdf";
 import autoTable from "jspdf-autotable";
+import { ensurePdfFonts } from "../lib/pdfFonts";
 import Modal from "../components/Modal";
 import { supabase } from "../lib/supabase";
-import { ensurePdfFonts } from "../lib/pdfFonts";
 import {
   AppointmentRow,
   Customer,
@@ -944,39 +944,46 @@ export default function JobsPage() {
       startY: y + 10,
       head: [["#", "Tip", "Denumire", "Qty", "Preț / unitate", "Subtotal"]],
       body,
-      styles: { font: "DejaVuSans", fontSize: 9, cellPadding: 4 },
+      styles: { font: "DejaVuSans", fontSize: 9, cellPadding: 4, minCellHeight: 18 },
       headStyles: { fillColor: [15, 23, 42], fontStyle: "bold", font: "DejaVuSans" },
       margin: { left: marginX, right: marginX },
     });
 
-    const lastY = (doc as any).lastAutoTable?.finalY ?? (y + 10);
-    let y2 = lastY + 18;
+    const tableEndY = (doc as any).lastAutoTable?.finalY ?? (y + 10);
     const discount = selectedJob.discount_value ?? 0;
     const grandTotal = Math.max(0, totals.subtotal - discount);
 
+    // Place totals at the bottom-left of the page.
+    const pageH = doc.internal.pageSize.getHeight();
+    const bottomMargin = 48;
+    const lineH = 14;
+    const blockH = lineH * 5 + 22 + 16; // 5 lines + spacing + TOTAL
+
+    let y2 = pageH - bottomMargin - blockH;
+
+    // If the table overlaps the totals area, move totals to a new page.
+    if (tableEndY + 24 > y2) {
+      doc.addPage();
+      y2 = pageH - bottomMargin - blockH;
+    }
+
     doc.setFont("DejaVuSans", "bold");
+    doc.setFontSize(11);
     doc.text(`Manoperă: ${moneyRON(totals.labor)}`, marginX, y2);
-    y2 += 14;
+    y2 += lineH;
     doc.text(`Piese: ${moneyRON(totals.parts)}`, marginX, y2);
-    y2 += 14;
+    y2 += lineH;
     doc.text(`Altele: ${moneyRON(totals.other)}`, marginX, y2);
-    y2 += 14;
+    y2 += lineH;
     doc.text(`Subtotal: ${moneyRON(totals.subtotal)}`, marginX, y2);
-    y2 += 14;
+    y2 += lineH;
     doc.text(`Discount: -${moneyRON(discount)}`, marginX, y2);
+
     y2 += 18;
     doc.setFontSize(13);
     doc.text(`TOTAL: ${moneyRON(grandTotal)}`, marginX, y2);
 
-    if ((selectedJob.notes ?? "").trim()) {
-      doc.setFontSize(10);
-      doc.setFont("DejaVuSans", "normal");
-      y2 += 22;
-      doc.text("Note:", marginX, y2);
-      y2 += 12;
-      const noteLines = doc.splitTextToSize(String(selectedJob.notes), 515);
-      doc.text(noteLines, marginX, y2);
-    }
+    // Notes are intentionally excluded from the exported PDF.
 
     const safeName = selectedJob.customer.name
       .replace(/[^a-zA-Z0-9_\- ]/g, "")
