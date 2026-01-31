@@ -948,40 +948,75 @@ export default function JobsPage() {
       headStyles: { fillColor: [15, 23, 42], fontStyle: "bold", font: "DejaVuSans" },
       margin: { left: marginX, right: marginX },
     });
-
     const tableEndY = (doc as any).lastAutoTable?.finalY ?? (y + 10);
-    const discount = selectedJob.discount_value ?? 0;
+
+    // Totals: align to the right, under the table (so values line up with the "Subtotal" column).
+    const pageW = doc.internal.pageSize.getWidth();
+    const pageH = doc.internal.pageSize.getHeight();
+
+    // Discount is stored as a positive number to subtract. Treat tiny values as 0 (avoid "-0,00").
+    const discountRaw = selectedJob.discount_value ?? 0;
+    const discount = Math.abs(discountRaw) < 0.005 ? 0 : discountRaw;
+    const hasDiscount = discount !== 0;
+
     const grandTotal = Math.max(0, totals.subtotal - discount);
 
-    // Place totals at the bottom-left of the page.
-    const pageH = doc.internal.pageSize.getHeight();
-    const bottomMargin = 48;
+    const xRight = pageW - marginX;
+    const xLabel = xRight - 220;
     const lineH = 14;
-    const blockH = lineH * 5 + 22 + 16; // 5 lines + spacing + TOTAL
 
-    let y2 = pageH - bottomMargin - blockH;
+    // Reserve space at the bottom for the signature block.
+    const signatureReserve = 110;
 
-    // If the table overlaps the totals area, move totals to a new page.
-    if (tableEndY + 24 > y2) {
+    const detailLines = 2 + (hasDiscount ? 2 : 0); // manoperă + piese (+ subtotal/discount if needed)
+    const blockH = detailLines * lineH + 20 + 18; // details + spacing + TOTAL line
+
+    let y2 = tableEndY + 30;
+
+    // If we don't have enough vertical space, move totals + signature to a new page.
+    if (y2 + blockH > pageH - signatureReserve) {
       doc.addPage();
-      y2 = pageH - bottomMargin - blockH;
+      y2 = 70;
     }
 
     doc.setFont("DejaVuSans", "bold");
     doc.setFontSize(11);
-    doc.text(`Manoperă: ${moneyRON(totals.labor)}`, marginX, y2);
-    y2 += lineH;
-    doc.text(`Piese: ${moneyRON(totals.parts)}`, marginX, y2);
-    y2 += lineH;
-    doc.text(`Altele: ${moneyRON(totals.other)}`, marginX, y2);
-    y2 += lineH;
-    doc.text(`Subtotal: ${moneyRON(totals.subtotal)}`, marginX, y2);
-    y2 += lineH;
-    doc.text(`Discount: -${moneyRON(discount)}`, marginX, y2);
 
-    y2 += 18;
+    const drawTotalLine = (label: string, value: string, yy: number) => {
+      doc.text(label, xLabel, yy);
+      doc.text(value, xRight, yy, { align: "right" });
+    };
+
+    // Keep the breakdown (without "Altele" per request)
+    drawTotalLine("Manoperă:", moneyRON(totals.labor), y2);
+    y2 += lineH;
+    drawTotalLine("Piese:", moneyRON(totals.parts), y2);
+    y2 += lineH;
+
+    if (hasDiscount) {
+      drawTotalLine("Subtotal:", moneyRON(totals.subtotal), y2);
+      y2 += lineH;
+
+      const discountText = discount >= 0 ? `-${moneyRON(discount)}` : moneyRON(discount);
+      drawTotalLine("Discount:", discountText, y2);
+      y2 += lineH;
+    }
+
+    y2 += 10;
     doc.setFontSize(13);
-    doc.text(`TOTAL: ${moneyRON(grandTotal)}`, marginX, y2);
+    drawTotalLine("TOTAL:", moneyRON(grandTotal), y2);
+
+    // Signature area: bottom-right of the page.
+    const signY = pageH - 80;
+    doc.setFont("DejaVuSans", "bold");
+    doc.setFontSize(11);
+    doc.text("Semnătura:", xRight, signY, { align: "right" });
+
+    // A simple signature line (space below for stamp/signature).
+    const signLineW = 190;
+    doc.setDrawColor(0);
+    doc.setLineWidth(0.8);
+    doc.line(xRight - signLineW, signY + 18, xRight, signY + 18);
 
     // Notes are intentionally excluded from the exported PDF.
 
