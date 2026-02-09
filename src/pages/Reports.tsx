@@ -2,7 +2,49 @@ import { DateTime } from "luxon";
 import { useEffect, useMemo, useState } from "react";
 import { listFinishedJobsWithNetBetween } from "../lib/db";
 
-const TIME_ZONE = "Europe/Bucharest";
+const RO_ZONE = "Europe/Bucharest";
+const TIME_ZONE = RO_ZONE;
+
+type DateRange = { start: DateTime; end: DateTime };
+
+function startOfIsoWeekRO(dt: DateTime): DateTime {
+  // ISO week: Monday = 1 ... Sunday = 7 (Luxon: dt.weekday)
+  const ro = dt.setZone(RO_ZONE).startOf("day");
+  return ro.minus({ days: ro.weekday - 1 }).startOf("day");
+}
+
+function endOfIsoWeekRO(dt: DateTime): DateTime {
+  return startOfIsoWeekRO(dt).plus({ days: 6 }).endOf("day");
+}
+
+function weekRangeRO(now: DateTime): DateRange {
+  return { start: startOfIsoWeekRO(now), end: endOfIsoWeekRO(now) };
+}
+
+function monthRangeRO(now: DateTime): DateRange {
+  const ro = now.setZone(RO_ZONE);
+  return { start: ro.startOf("month").startOf("day"), end: ro.endOf("month").endOf("day") };
+}
+
+function yearRangeRO(now: DateTime): DateRange {
+  const ro = now.setZone(RO_ZONE);
+  return { start: ro.startOf("year").startOf("day"), end: ro.endOf("year").endOf("day") };
+}
+
+function shiftRange(r: DateRange, delta: { weeks?: number; months?: number; years?: number }): DateRange {
+  return { start: r.start.minus(delta), end: r.end.minus(delta) };
+}
+
+function fmtRange(r: DateRange): string {
+  return `${r.start.toISODate()} → ${r.end.toISODate()}`;
+}
+
+// Query end exclusiv (cel mai safe pt timestamptz)
+function toDbRangeExclusive(r: DateRange): { fromIso: string; toIsoExclusive: string } {
+  const fromIso = r.start.startOf("day").toUTC().toISO()!;
+  const toIsoExclusive = r.end.plus({ days: 1 }).startOf("day").toUTC().toISO()!;
+  return { fromIso, toIsoExclusive };
+}
 
 function pad2(n: number) {
   return String(n).padStart(2, "0");
@@ -139,9 +181,9 @@ export default function ReportsPage() {
     return { startIso, endIso };
   }
 
-  async function fetchTotals(start: string, end: string): Promise<{ total: number; jobs: number }> {
-    const { startIso, endIso } = ymdRangeToIso(start, end);
-    const jobs = await listFinishedJobsWithNetBetween(startIso, endIso);
+  async function fetchTotalsRange(range: DateRange): Promise<{ total: number; jobs: number }> {
+    const { fromIso, toIsoExclusive } = toDbRangeExclusive(range);
+    const jobs = await listFinishedJobsWithNetBetween(fromIso, toIsoExclusive);
     const total = jobs.reduce((acc, j) => acc + toNumber(j.net_total), 0);
     return { total, jobs: jobs.length };
   }
@@ -160,42 +202,24 @@ export default function ReportsPage() {
       const prevEndYmd = addDaysYmd(startYmd, -1);
       const prevIso = ymdRangeToIso(prevStartYmd, prevEndYmd);
 
-      // Perioade rapide (RO)
-      const today = DateTime.now().setZone(TIME_ZONE).startOf("day");
-      const todayYmd = today.toISODate() ?? ymdInTimeZone(new Date());
-
-      const weekStart = today.minus({ days: today.weekday - 1 });
-      const weekStartYmd = weekStart.toISODate() ?? todayYmd;
-      const weekPrevStartYmd = addDaysYmd(weekStartYmd, -7);
-      const weekPrevEndYmd = addDaysYmd(todayYmd, -7);
-
-      const monthStart = today.startOf("month");
-      const monthStartYmd = monthStart.toISODate() ?? `${todayYmd.slice(0, 8)}01`;
-
-      const prevMonthStart = today.minus({ months: 1 }).startOf("month");
-      let prevMonthEnd = prevMonthStart.plus({ days: today.day - 1 });
-      if (prevMonthEnd.month != prevMonthStart.month) prevMonthEnd = prevMonthStart.endOf("month");
-      const prevMonthStartYmd = prevMonthStart.toISODate() ?? addDaysYmd(monthStartYmd, -30);
-      const prevMonthEndYmd = prevMonthEnd.toISODate() ?? addDaysYmd(prevMonthStartYmd, today.day - 1);
-
-      const yearStart = today.startOf("year");
-      const yearStartYmd = yearStart.toISODate() ?? `${todayYmd.slice(0, 4)}-01-01`;
-
-      const prevYearStart = today.minus({ years: 1 }).startOf("year");
-      let prevYearEnd = prevYearStart.plus({ days: today.ordinal - 1 });
-      if (prevYearEnd.year != prevYearStart.year) prevYearEnd = prevYearStart.endOf("year");
-      const prevYearStartYmd = prevYearStart.toISODate() ?? `${Number(todayYmd.slice(0, 4)) - 1}-01-01`;
-      const prevYearEndYmd = prevYearEnd.toISODate() ?? addDaysYmd(prevYearStartYmd, today.ordinal - 1);
+      // Perioade rapide (RO) — intervale COMPLETE
+      const now = DateTime.now().setZone(RO_ZONE);
+      const weekCurRange = weekRangeRO(now);
+      const weekPrevRange = shiftRange(weekCurRange, { weeks: 1 });
+      const monthCurRange = monthRangeRO(now);
+      const monthPrevRange = shiftRange(monthCurRange, { months: 1 });
+      const yearCurRange = yearRangeRO(now);
+      const yearPrevRange = shiftRange(yearCurRange, { years: 1 });
 
       const [rangeJobs, prevRange, weekCur, weekPrev, monthCur, monthPrev, yearCur, yearPrev] = await Promise.all([
         listFinishedJobsWithNetBetween(startIso, endIso),
         listFinishedJobsWithNetBetween(prevIso.startIso, prevIso.endIso),
-        fetchTotals(weekStartYmd, todayYmd),
-        fetchTotals(weekPrevStartYmd, weekPrevEndYmd),
-        fetchTotals(monthStartYmd, todayYmd),
-        fetchTotals(prevMonthStartYmd, prevMonthEndYmd),
-        fetchTotals(yearStartYmd, todayYmd),
-        fetchTotals(prevYearStartYmd, prevYearEndYmd),
+        fetchTotalsRange(weekCurRange),
+        fetchTotalsRange(weekPrevRange),
+        fetchTotalsRange(monthCurRange),
+        fetchTotalsRange(monthPrevRange),
+        fetchTotalsRange(yearCurRange),
+        fetchTotalsRange(yearPrevRange),
       ]);
 
       const byDay = new Map<string, { total: number; jobs: number }>();
@@ -225,15 +249,15 @@ export default function ReportsPage() {
 
       setWeekTotal(weekCur.total);
       setWeekPrevTotal(weekPrev.total);
-      setWeekLabel(`${weekStartYmd} → ${todayYmd}`);
+      setWeekLabel(fmtRange(weekCurRange));
 
       setMonthTotal(monthCur.total);
       setMonthPrevTotal(monthPrev.total);
-      setMonthLabel(`${monthStartYmd} → ${todayYmd}`);
+      setMonthLabel(fmtRange(monthCurRange));
 
       setYearTotal(yearCur.total);
       setYearPrevTotal(yearPrev.total);
-      setYearLabel(`${yearStartYmd} → ${todayYmd}`);
+      setYearLabel(fmtRange(yearCurRange));
     } catch (e) {
       setErr(e instanceof Error ? e.message : "Eroare la rapoarte");
     } finally {
@@ -247,7 +271,6 @@ export default function ReportsPage() {
   }, []);
 
   const avg = useMemo(() => (sumJobs ? sumTotal / sumJobs : 0), [sumJobs, sumTotal]);
-
 
   function renderDeltaLine(current: number, previous: number) {
     const { delta, pct } = deltaInfo(current, previous);
@@ -275,7 +298,9 @@ export default function ReportsPage() {
         <div className="row">
           <input className="input" style={{ width: 170 }} type="date" value={startYmd} onChange={(e) => setStartYmd(e.target.value)} />
           <input className="input" style={{ width: 170 }} type="date" value={endYmd} onChange={(e) => setEndYmd(e.target.value)} />
-          <button className="btn primary" onClick={() => void refresh()}>{loading ? "Calculez…" : "Refresh"}</button>
+          <button className="btn primary" onClick={() => void refresh()}>
+            {loading ? "Calculez…" : "Refresh"}
+          </button>
         </div>
       </div>
 
@@ -288,7 +313,9 @@ export default function ReportsPage() {
       <div className="grid2">
         <div className="card card-pad">
           <div style={{ fontWeight: 950, marginBottom: 6 }}>Interval selectat</div>
-          <div className="muted" style={{ marginBottom: 8 }}>{startYmd} → {endYmd}</div>
+          <div className="muted" style={{ marginBottom: 8 }}>
+            {startYmd} → {endYmd}
+          </div>
 
           <div className="row" style={{ justifyContent: "space-between" }}>
             <span className="muted">Total net</span>
@@ -325,27 +352,33 @@ export default function ReportsPage() {
             <span className="muted">Vs săptămâna precedentă</span>
             {renderDeltaLine(weekTotal, weekPrevTotal)}
           </div>
-          <div className="muted" style={{ fontSize: 12, marginBottom: 10 }}>{weekLabel}</div>
+          <div className="muted" style={{ fontSize: 12, marginBottom: 10 }}>
+            {weekLabel}
+          </div>
 
           <div className="row" style={{ justifyContent: "space-between" }}>
             <span className="muted">Luna curentă</span>
             <b>{moneyRON(monthTotal)}</b>
           </div>
           <div className="row" style={{ justifyContent: "space-between" }}>
-            <span className="muted">Vs luna precedentă (MTD)</span>
+            <span className="muted">Vs luna precedentă</span>
             {renderDeltaLine(monthTotal, monthPrevTotal)}
           </div>
-          <div className="muted" style={{ fontSize: 12, marginBottom: 10 }}>{monthLabel}</div>
+          <div className="muted" style={{ fontSize: 12, marginBottom: 10 }}>
+            {monthLabel}
+          </div>
 
           <div className="row" style={{ justifyContent: "space-between" }}>
             <span className="muted">Anul curent</span>
             <b>{moneyRON(yearTotal)}</b>
           </div>
           <div className="row" style={{ justifyContent: "space-between" }}>
-            <span className="muted">Vs anul precedent (YTD)</span>
+            <span className="muted">Vs anul precedent</span>
             {renderDeltaLine(yearTotal, yearPrevTotal)}
           </div>
-          <div className="muted" style={{ fontSize: 12 }}>{yearLabel}</div>
+          <div className="muted" style={{ fontSize: 12 }}>
+            {yearLabel}
+          </div>
         </div>
       </div>
 
