@@ -3,30 +3,33 @@ import { useEffect, useMemo, useState } from "react";
 import { listFinishedJobsWithNetBetween } from "../lib/db";
 
 const RO_ZONE = "Europe/Bucharest";
-const TIME_ZONE = RO_ZONE;
 
-type DateRange = { start: DateTime; end: DateTime };
+// În anumite setup-uri TS poate “vedea” DateTime ca namespace (și dă TS2709).
+// Ca să evităm complet asta, derivăm tipul instanței dintr-un call real.
+type LuxonDT = ReturnType<typeof DateTime.now>;
 
-function startOfIsoWeekRO(dt: DateTime): DateTime {
+type DateRange = { start: LuxonDT; end: LuxonDT };
+
+function startOfIsoWeekRO(dt: LuxonDT): LuxonDT {
   // ISO week: Monday = 1 ... Sunday = 7 (Luxon: dt.weekday)
   const ro = dt.setZone(RO_ZONE).startOf("day");
   return ro.minus({ days: ro.weekday - 1 }).startOf("day");
 }
 
-function endOfIsoWeekRO(dt: DateTime): DateTime {
+function endOfIsoWeekRO(dt: LuxonDT): LuxonDT {
   return startOfIsoWeekRO(dt).plus({ days: 6 }).endOf("day");
 }
 
-function weekRangeRO(now: DateTime): DateRange {
+function weekRangeRO(now: LuxonDT): DateRange {
   return { start: startOfIsoWeekRO(now), end: endOfIsoWeekRO(now) };
 }
 
-function monthRangeRO(now: DateTime): DateRange {
+function monthRangeRO(now: LuxonDT): DateRange {
   const ro = now.setZone(RO_ZONE);
   return { start: ro.startOf("month").startOf("day"), end: ro.endOf("month").endOf("day") };
 }
 
-function yearRangeRO(now: DateTime): DateRange {
+function yearRangeRO(now: LuxonDT): DateRange {
   const ro = now.setZone(RO_ZONE);
   return { start: ro.startOf("year").startOf("day"), end: ro.endOf("year").endOf("day") };
 }
@@ -39,7 +42,7 @@ function fmtRange(r: DateRange): string {
   return `${r.start.toISODate()} → ${r.end.toISODate()}`;
 }
 
-// Query end exclusiv (cel mai safe pt timestamptz)
+// Dacă query-ul tău folosește end exclusiv (cel mai safe pt timestamptz):
 function toDbRangeExclusive(r: DateRange): { fromIso: string; toIsoExclusive: string } {
   const fromIso = r.start.startOf("day").toUTC().toISO()!;
   const toIsoExclusive = r.end.plus({ days: 1 }).startOf("day").toUTC().toISO()!;
