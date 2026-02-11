@@ -1,13 +1,12 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type SVGProps } from "react";
 import { DateTime } from "luxon";
-import { listFinishedJobsWithNetBetween, type JobRowWithCustomer } from "../lib/db";
+import { listFinishedJobsWithNetBetween } from "../lib/db";
 
-import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { Badge } from "@/components/ui/badge";
-import { Checkbox } from "@/components/ui/checkbox";
-import { ChevronDown, ChevronUp, Download, Filter, Search, X } from "lucide-react";
+import { Button } from "../components/ui/button";
+import { Card } from "../components/ui/card";
+import { Input } from "../components/ui/input";
+import { Badge } from "../components/ui/badge";
+import { Checkbox } from "../components/ui/checkbox";
 
 const RO_ZONE = "Europe/Bucharest";
 
@@ -22,6 +21,9 @@ type DateRange = { start: LuxonDT; end: LuxonDT };
 
 type SortKey = "customer" | "net" | "jobs" | "avg";
 type SortDir = "asc" | "desc";
+
+// Tip derivat direct din funcția DB (evită TS2305 dacă db.ts nu exportă JobRowWithCustomer)
+type JobRowWithCustomer = Awaited<ReturnType<typeof listFinishedJobsWithNetBetween>>[number];
 
 function startOfIsoWeekRO(dt: LuxonDT): LuxonDT {
   const ro = dt.setZone(RO_ZONE).startOf("day");
@@ -52,13 +54,6 @@ function shiftRange(r: DateRange, delta: { weeks?: number; months?: number; year
 
 function fmtRange(r: DateRange): string {
   return `${r.start.toISODate()} → ${r.end.toISODate()}`;
-}
-
-// dacă query-ul tău folosește end exclusiv (cel mai safe pt timestamptz):
-function toDbRangeExclusive(r: DateRange): { fromIso: string; toIsoExclusive: string } {
-  const fromIso = r.start.startOf("day").toUTC().toISO()!;
-  const toIsoExclusive = r.end.plus({ days: 1 }).startOf("day").toUTC().toISO()!;
-  return { fromIso, toIsoExclusive };
 }
 
 function formatRON(amount: number): string {
@@ -176,6 +171,58 @@ function escapeCsvCell(v: unknown): string {
   return s;
 }
 
+/** Icon-uri inline (elimină dependența lucide-react) */
+function IconSearch(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" {...props}>
+      <path strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M21 21l-4.3-4.3" />
+      <circle cx="11" cy="11" r="7" strokeWidth="2" />
+    </svg>
+  );
+}
+function IconX(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" {...props}>
+      <path strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M18 6 6 18M6 6l12 12" />
+    </svg>
+  );
+}
+function IconFilter(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" {...props}>
+      <path
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M4 6h16M7 12h10M10 18h4"
+      />
+    </svg>
+  );
+}
+function IconDownload(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" {...props}>
+      <path strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M12 3v10" />
+      <path strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M8 11l4 4 4-4" />
+      <path strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M4 20h16" />
+    </svg>
+  );
+}
+function IconChevronUp(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" {...props}>
+      <path strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M18 15l-6-6-6 6" />
+    </svg>
+  );
+}
+function IconChevronDown(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" {...props}>
+      <path strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M6 9l6 6 6-6" />
+    </svg>
+  );
+}
+
 export default function Reports() {
   // UI date range (YYYY-MM-DD) în RO zone
   const [startYmd, setStartYmd] = useState(() => ymdInTimeZone(new Date(), RO_ZONE));
@@ -266,7 +313,7 @@ export default function Reports() {
     // group by customer.name
     const map = new Map<string, JobRowWithCustomer[]>();
     for (const j of jobs) {
-      const name = clampNonEmpty(j.customer?.name) || "Client necunoscut";
+      const name = clampNonEmpty((j as any)?.customer?.name) || "Client necunoscut";
       const arr = map.get(name) ?? [];
       arr.push(j);
       map.set(name, arr);
@@ -276,22 +323,18 @@ export default function Reports() {
 
   const reportRows = useMemo(() => {
     const rows = Array.from(grouped.entries()).map(([customer, items]) => {
-      const net = items.reduce((s, it) => s + (it.net_total ?? 0), 0);
+      const net = items.reduce((s, it) => s + (((it as any)?.net_total ?? 0) as number), 0);
       const jobsCount = items.length;
       const avg = jobsCount ? net / jobsCount : 0;
       return { customer, net, jobs: jobsCount, avg };
     });
 
     // search filter
-    const filtered = searchTerm
-      ? rows.filter((r) => r.customer.toLowerCase().includes(searchTerm))
-      : rows;
+    const filtered = searchTerm ? rows.filter((r) => r.customer.toLowerCase().includes(searchTerm)) : rows;
 
     // checkbox filters (if any enabled)
     const anyFilterEnabled = Object.values(filtersByKey).some(Boolean);
-    const filtered2 = anyFilterEnabled
-      ? filtered.filter((r) => filtersByKey[r.customer])
-      : filtered;
+    const filtered2 = anyFilterEnabled ? filtered.filter((r) => filtersByKey[r.customer]) : filtered;
 
     // sorting
     const dirMul = sortDir === "asc" ? 1 : -1;
@@ -314,8 +357,7 @@ export default function Reports() {
   }, [reportRows, startYmd, endYmd]);
 
   const customersForFilter = useMemo(() => {
-    const all = Array.from(grouped.keys()).sort((a, b) => a.localeCompare(b));
-    return all;
+    return Array.from(grouped.keys()).sort((a, b) => a.localeCompare(b));
   }, [grouped]);
 
   // keep filtersByKey in sync with customers list
@@ -342,12 +384,9 @@ export default function Reports() {
 
     for (const r of reportRows) {
       lines.push(
-        [
-          escapeCsvCell(r.customer),
-          escapeCsvCell(r.net.toFixed(2)),
-          escapeCsvCell(r.jobs),
-          escapeCsvCell(r.avg.toFixed(2)),
-        ].join(",")
+        [escapeCsvCell(r.customer), escapeCsvCell(r.net.toFixed(2)), escapeCsvCell(r.jobs), escapeCsvCell(r.avg.toFixed(2))].join(
+          ","
+        )
       );
     }
 
@@ -357,7 +396,7 @@ export default function Reports() {
 
   const sortIcon = (k: SortKey) => {
     if (sortKey !== k) return null;
-    return sortDir === "asc" ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />;
+    return sortDir === "asc" ? <IconChevronUp className="h-4 w-4" /> : <IconChevronDown className="h-4 w-4" />;
   };
 
   return (
@@ -366,8 +405,7 @@ export default function Reports() {
         <div className="space-y-1">
           <h1 className="text-2xl font-semibold">Rapoarte</h1>
           <div className="text-sm text-muted-foreground">
-            Interval: <span className="font-medium">{startYmd}</span> →{" "}
-            <span className="font-medium">{endYmd}</span>{" "}
+            Interval: <span className="font-medium">{startYmd}</span> → <span className="font-medium">{endYmd}</span>{" "}
             {presetRangeLabel ? (
               <Badge variant="secondary" className="ml-2">
                 preset: {presetRangeLabel}
@@ -378,11 +416,11 @@ export default function Reports() {
 
         <div className="flex flex-wrap items-center gap-2">
           <Button variant="outline" onClick={() => setShowFilters((v) => !v)}>
-            <Filter className="h-4 w-4 mr-2" /> Filtre
+            <IconFilter className="h-4 w-4 mr-2" /> Filtre
           </Button>
 
           <Button variant="outline" onClick={exportCsv} disabled={!reportRows.length}>
-            <Download className="h-4 w-4 mr-2" /> Export CSV
+            <IconDownload className="h-4 w-4 mr-2" /> Export CSV
           </Button>
         </div>
       </div>
@@ -443,20 +481,16 @@ export default function Reports() {
           <div className="md:col-span-6 space-y-1">
             <label className="text-sm font-medium">Caută client</label>
             <div className="relative">
-              <Search className="h-4 w-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
-              <Input
-                className="pl-9"
-                placeholder="ex: Popescu"
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-              />
+              <IconSearch className="h-4 w-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+              <Input className="pl-9" placeholder="ex: Popescu" value={search} onChange={(e) => setSearch(e.target.value)} />
               {search ? (
                 <button
+                  type="button"
                   className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
                   onClick={() => setSearch("")}
                   aria-label="Clear search"
                 >
-                  <X className="h-4 w-4" />
+                  <IconX className="h-4 w-4" />
                 </button>
               ) : null}
             </div>
@@ -494,10 +528,7 @@ export default function Reports() {
             <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2">
               {customersForFilter.map((name) => (
                 <label key={name} className="flex items-center gap-2 text-sm">
-                  <Checkbox
-                    checked={filtersByKey[name] ?? false}
-                    onCheckedChange={(v) => setFiltersByKey((p) => ({ ...p, [name]: !!v }))}
-                  />
+                  <Checkbox checked={filtersByKey[name] ?? false} onCheckedChange={(v) => setFiltersByKey((p) => ({ ...p, [name]: v }))} />
                   <span className="truncate">{name}</span>
                 </label>
               ))}
