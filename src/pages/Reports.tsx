@@ -1,48 +1,26 @@
-import { useEffect, useMemo, useState } from "react";
 import { DateTime } from "luxon";
-import { listFinishedJobsWithNetBetween, type JobRowWithCustomer } from "../lib/db";
+import { useEffect, useMemo, useState } from "react";
+import { listFinishedJobsWithNetBetween } from "../lib/db";
 
-import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
+const TIME_ZONE = "Europe/Bucharest";
 
-const RO_ZONE = "Europe/Bucharest";
-
-type Totals = { net: number; jobs: number; avg: number };
-
-function formatRON(amount: number): string {
-  return new Intl.NumberFormat("ro-RO", { style: "currency", currency: "RON" }).format(amount);
-}
-function formatSignedRON(amount: number): string {
-  const sign = amount > 0 ? "+" : "";
-  return `${sign}${formatRON(amount)}`;
-}
-function formatPct(pct: number | null): string {
-  if (pct === null || Number.isNaN(pct) || !Number.isFinite(pct)) return "—";
-  const sign = pct > 0 ? "+" : "";
-  return `${sign}${pct.toFixed(1)}%`;
-}
-function clampNonEmpty(s: string): string {
-  return (s ?? "").trim();
+function pad2(n: number) {
+  return String(n).padStart(2, "0");
 }
 
-function ymdInTimeZone(date: Date, tzId: string): string {
+function ymdInTimeZone(date: Date) {
   const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone: tzId,
+    timeZone: TIME_ZONE,
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
   }).formatToParts(date);
 
-  const map = Object.fromEntries(parts.map((p) => [p.type, p.value])) as Record<string, string>;
+  const map = Object.fromEntries(parts.filter((p) => p.type !== "literal").map((p) => [p.type, p.value]));
   return `${map.year}-${map.month}-${map.day}`;
 }
 
-function pad2(n: number): string {
-  return String(n).padStart(2, "0");
-}
-
-function getTimeZoneOffsetMinutes(date: Date, timeZone: string): number {
+function getTimeZoneOffsetMinutes(timeZone: string, date: Date): number {
   const dtf = new Intl.DateTimeFormat("en-US", {
     timeZone,
     hour12: false,
@@ -55,435 +33,356 @@ function getTimeZoneOffsetMinutes(date: Date, timeZone: string): number {
   });
 
   const parts = dtf.formatToParts(date);
-  const map = Object.fromEntries(parts.map((p) => [p.type, p.value])) as Record<string, string>;
+  const map = Object.fromEntries(parts.filter((p) => p.type !== "literal").map((p) => [p.type, p.value]));
 
-  const asUTC = Date.UTC(
+  const asUtc = Date.UTC(
     Number(map.year),
     Number(map.month) - 1,
     Number(map.day),
     Number(map.hour),
     Number(map.minute),
-    Number(map.second)
+    Number(map.second),
   );
 
-  return (asUTC - date.getTime()) / 60_000;
+  return (asUtc - date.getTime()) / 60000;
 }
 
 function toUtcIsoFromDatetimeLocalInTz(timeZone: string, value: string): string {
-  const assumedUtc = new Date(`${value}:00.000Z`);
-  const offsetMinutes = getTimeZoneOffsetMinutes(assumedUtc, timeZone);
-  const correctedUtc = new Date(assumedUtc.getTime() - offsetMinutes * 60_000);
-  return correctedUtc.toISOString();
+  const [d, t] = value.split("T");
+  const [y, m, day] = d.split("-").map((x) => Number(x));
+  const [hh, mm] = t.split(":").map((x) => Number(x));
+
+  const assumedUtcMs = Date.UTC(y, m - 1, day, hh, mm, 0);
+  const offsetMin = getTimeZoneOffsetMinutes(timeZone, new Date(assumedUtcMs));
+  const realUtcMs = assumedUtcMs - offsetMin * 60_000;
+
+  return new Date(realUtcMs).toISOString();
 }
 
-function addDaysYmd(ymd: string, days: number): string {
+function addDaysYmd(ymd: string, deltaDays: number): string {
   const [y, m, d] = ymd.split("-").map((x) => Number(x));
-  const base = new Date(Date.UTC(y, m - 1, d, 12, 0, 0));
-  base.setUTCDate(base.getUTCDate() + days);
-  const yy = base.getUTCFullYear();
-  const mm = pad2(base.getUTCMonth() + 1);
-  const dd = pad2(base.getUTCDate());
-  return `${yy}-${mm}-${dd}`;
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  dt.setUTCDate(dt.getUTCDate() + deltaDays);
+  return `${dt.getUTCFullYear()}-${pad2(dt.getUTCMonth() + 1)}-${pad2(dt.getUTCDate())}`;
+}
+
+function nextYmd(ymd: string): string {
+  return addDaysYmd(ymd, 1);
 }
 
 function daysBetweenInclusive(startYmd: string, endYmd: string): number {
-  const [sy, sm, sd] = startYmd.split("-").map(Number);
-  const [ey, em, ed] = endYmd.split("-").map(Number);
-  const a = Date.UTC(sy, sm - 1, sd, 12, 0, 0);
-  const b = Date.UTC(ey, em - 1, ed, 12, 0, 0);
-  const diff = Math.round((b - a) / 86_400_000);
-  return diff + 1;
+  const [y1, m1, d1] = startYmd.split("-").map((x) => Number(x));
+  const [y2, m2, d2] = endYmd.split("-").map((x) => Number(x));
+  const a = Date.UTC(y1, m1 - 1, d1);
+  const b = Date.UTC(y2, m2 - 1, d2);
+  return Math.floor((b - a) / 86_400_000) + 1;
 }
 
-function normalizeRange(a: string, b: string): { start: string; end: string } {
-  if (!a || !b) return { start: a, end: b };
-  return a <= b ? { start: a, end: b } : { start: b, end: a };
+function moneyRON(amount: number) {
+  return new Intl.NumberFormat("ro-RO", { style: "currency", currency: "RON" }).format(amount);
 }
 
-function calcTotals(rows: JobRowWithCustomer[]): Totals {
-  const net = rows.reduce((s, it) => s + (it.net_total ?? 0), 0);
-  const jobs = rows.length;
-  const avg = jobs ? net / jobs : 0;
-  return { net, jobs, avg };
+function toNumber(v: unknown): number {
+  if (typeof v === "number") return v;
+  if (typeof v === "string") {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : 0;
+  }
+  return 0;
 }
 
-function buildQueryIsoExclusive(startYmd: string, endYmd: string): { fromIso: string; toIsoExclusive: string } {
-  const fromLocal = `${startYmd}T00:00`;
-  const toLocalExclusive = `${addDaysYmd(endYmd, 1)}T00:00`;
-
-  const fromIso = toUtcIsoFromDatetimeLocalInTz(RO_ZONE, fromLocal);
-  const toIsoExclusive = toUtcIsoFromDatetimeLocalInTz(RO_ZONE, toLocalExclusive);
-
-  return { fromIso, toIsoExclusive };
+function deltaInfo(current: number, previous: number): { delta: number; pct: number | null } {
+  const delta = current - previous;
+  if (previous > 0) {
+    return { delta, pct: (delta / previous) * 100 };
+  }
+  return { delta, pct: null };
 }
 
-async function fetchRowsBetween(startYmd: string, endYmd: string): Promise<JobRowWithCustomer[]> {
-  const { fromIso, toIsoExclusive } = buildQueryIsoExclusive(startYmd, endYmd);
-  return listFinishedJobsWithNetBetween(fromIso, toIsoExclusive);
-}
-
-function getJobDateYmdRO(job: JobRowWithCustomer): string | null {
-  const anyJob = job as any;
-  const raw =
-    anyJob?.created_at ??
-    anyJob?.createdAt ??
-    anyJob?.finished_at ??
-    anyJob?.finishedAt ??
-    anyJob?.date ??
-    null;
-
-  if (!raw) return null;
-
-  const d = raw instanceof Date ? raw : new Date(raw);
-  if (Number.isNaN(d.getTime())) return null;
-
-  return ymdInTimeZone(d, RO_ZONE);
-}
-
-export default function Reports() {
-  // input-uri (draft) + interval aplicat (query)
-  const [draftStart, setDraftStart] = useState(() => ymdInTimeZone(new Date(), RO_ZONE));
-  const [draftEnd, setDraftEnd] = useState(() => ymdInTimeZone(new Date(), RO_ZONE));
-
-  const [qStart, setQStart] = useState(draftStart);
-  const [qEnd, setQEnd] = useState(draftEnd);
+export default function ReportsPage() {
+  const [startYmd, setStartYmd] = useState(() => {
+    const d = DateTime.now().setZone(TIME_ZONE);
+    const ymd = d.toISODate() ?? ymdInTimeZone(new Date());
+    return `${ymd.slice(0, 8)}01`; // prima zi din luna curenta
+  });
+  const [endYmd, setEndYmd] = useState(() => {
+    const d = DateTime.now().setZone(TIME_ZONE);
+    return d.toISODate() ?? ymdInTimeZone(new Date());
+  });
 
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
 
-  // data
-  const [selectedRows, setSelectedRows] = useState<JobRowWithCustomer[]>([]);
-  const [selectedTotals, setSelectedTotals] = useState<Totals>({ net: 0, jobs: 0, avg: 0 });
+  const [rows, setRows] = useState<Array<{ day: string; total: number; jobs: number }>>([]);
 
-  const [prevTotals, setPrevTotals] = useState<Totals>({ net: 0, jobs: 0, avg: 0 });
-  const [weekTotals, setWeekTotals] = useState<Totals>({ net: 0, jobs: 0, avg: 0 });
-  const [prevWeekTotals, setPrevWeekTotals] = useState<Totals>({ net: 0, jobs: 0, avg: 0 });
-  const [monthTotals, setMonthTotals] = useState<Totals>({ net: 0, jobs: 0, avg: 0 });
-  const [prevMonthTotals, setPrevMonthTotals] = useState<Totals>({ net: 0, jobs: 0, avg: 0 });
-  const [yearTotals, setYearTotals] = useState<Totals>({ net: 0, jobs: 0, avg: 0 });
-  const [prevYearTotals, setPrevYearTotals] = useState<Totals>({ net: 0, jobs: 0, avg: 0 });
+  const [sumTotal, setSumTotal] = useState(0);
+  const [sumJobs, setSumJobs] = useState(0);
 
-  const now = DateTime.now().setZone(RO_ZONE);
+  const [prevTotal, setPrevTotal] = useState(0);
+  const [prevJobs, setPrevJobs] = useState(0);
 
-  function onRefresh() {
-    const n = normalizeRange(draftStart, draftEnd);
-    setQStart(n.start);
-    setQEnd(n.end);
+  const [weekTotal, setWeekTotal] = useState(0);
+  const [weekPrevTotal, setWeekPrevTotal] = useState(0);
+  const [weekLabel, setWeekLabel] = useState<string>("");
+
+  const [monthTotal, setMonthTotal] = useState(0);
+  const [monthPrevTotal, setMonthPrevTotal] = useState(0);
+  const [monthLabel, setMonthLabel] = useState<string>("");
+
+  const [yearTotal, setYearTotal] = useState(0);
+  const [yearPrevTotal, setYearPrevTotal] = useState(0);
+  const [yearLabel, setYearLabel] = useState<string>("");
+
+  function ymdRangeToIso(start: string, end: string): { startIso: string; endIso: string } {
+    const startIso = toUtcIsoFromDatetimeLocalInTz(TIME_ZONE, `${start}T00:00`);
+    const endIso = toUtcIsoFromDatetimeLocalInTz(TIME_ZONE, `${nextYmd(end)}T00:00`);
+    return { startIso, endIso };
   }
 
-  // range-uri “în stil vechi”, raportate la qEnd (nu la “azi”)
-  const ranges = useMemo(() => {
-    const { start, end } = normalizeRange(qStart, qEnd);
+  async function fetchTotals(start: string, end: string): Promise<{ total: number; jobs: number }> {
+    const { startIso, endIso } = ymdRangeToIso(start, end);
+    const jobs = await listFinishedJobsWithNetBetween(startIso, endIso);
+    const total = jobs.reduce((acc, j) => acc + toNumber(j.net_total), 0);
+    return { total, jobs: jobs.length };
+  }
 
-    const ref = DateTime.fromISO(end, { zone: RO_ZONE }).endOf("day");
-    const startDt = DateTime.fromISO(start, { zone: RO_ZONE }).startOf("day");
-    const days = daysBetweenInclusive(start, end);
+  async function refresh() {
+    setErr(null);
+    setLoading(true);
 
-    // perioada precedentă (imediat înainte)
-    const prevEnd = startDt.minus({ days: 1 }).toISODate()!;
-    const prevStart = startDt.minus({ days }).toISODate()!;
+    try {
+      // Selectat
+      const { startIso, endIso } = ymdRangeToIso(startYmd, endYmd);
 
-    // săptămână curentă (de la luni până la qEnd)
-    const weekStart = ref.startOf("day").minus({ days: ref.weekday - 1 }).toISODate()!;
-    const weekEnd = ref.toISODate()!;
-    const prevWeekStart = DateTime.fromISO(weekStart, { zone: RO_ZONE }).minus({ weeks: 1 }).toISODate()!;
-    const prevWeekEnd = DateTime.fromISO(weekEnd, { zone: RO_ZONE }).minus({ weeks: 1 }).toISODate()!;
+      // Perioada precedentă (aceeași lungime)
+      const lenDays = daysBetweenInclusive(startYmd, endYmd);
+      const prevStartYmd = addDaysYmd(startYmd, -lenDays);
+      const prevEndYmd = addDaysYmd(startYmd, -1);
+      const prevIso = ymdRangeToIso(prevStartYmd, prevEndYmd);
 
-    // MTD (de la 1 până la qEnd)
-    const monthStart = ref.startOf("month").toISODate()!;
-    const monthEnd = ref.toISODate()!;
-    const prevMonthStartDt = ref.startOf("month").minus({ months: 1 });
-    const dayInMonth = ref.day;
-    const prevMonthEndDay = Math.min(dayInMonth, prevMonthStartDt.daysInMonth ?? dayInMonth);
-    const prevMonthStart = prevMonthStartDt.toISODate()!;
-    const prevMonthEnd = prevMonthStartDt.set({ day: prevMonthEndDay }).toISODate()!;
+      // Perioade rapide (RO)
+      const today = DateTime.now().setZone(TIME_ZONE).startOf("day");
+      const todayYmd = today.toISODate() ?? ymdInTimeZone(new Date());
 
-    // YTD (de la 1 ian până la qEnd)
-    const yearStart = ref.startOf("year").toISODate()!;
-    const yearEnd = ref.toISODate()!;
-    const prevYearStartDt = ref.startOf("year").minus({ years: 1 });
-    const prevYearStart = prevYearStartDt.toISODate()!;
-    const prevYearEnd = prevYearStartDt.plus({ days: ref.ordinal - 1 }).toISODate()!;
+      const weekStart = today.minus({ days: today.weekday - 1 });
+      const weekStartYmd = weekStart.toISODate() ?? todayYmd;
+      const weekPrevStartYmd = addDaysYmd(weekStartYmd, -7);
+      const weekPrevEndYmd = addDaysYmd(todayYmd, -7);
 
-    return {
-      start,
-      end,
-      days,
-      prev: { start: prevStart, end: prevEnd },
-      week: { start: weekStart, end: weekEnd, prevStart: prevWeekStart, prevEnd: prevWeekEnd },
-      month: { start: monthStart, end: monthEnd, prevStart: prevMonthStart, prevEnd: prevMonthEnd },
-      year: { start: yearStart, end: yearEnd, prevStart: prevYearStart, prevEnd: prevYearEnd },
-    };
-  }, [qStart, qEnd]);
+      const monthStart = today.startOf("month");
+      const monthStartYmd = monthStart.toISODate() ?? `${todayYmd.slice(0, 8)}01`;
+
+      const prevMonthStart = today.minus({ months: 1 }).startOf("month");
+      let prevMonthEnd = prevMonthStart.plus({ days: today.day - 1 });
+      if (prevMonthEnd.month != prevMonthStart.month) prevMonthEnd = prevMonthStart.endOf("month");
+      const prevMonthStartYmd = prevMonthStart.toISODate() ?? addDaysYmd(monthStartYmd, -30);
+      const prevMonthEndYmd = prevMonthEnd.toISODate() ?? addDaysYmd(prevMonthStartYmd, today.day - 1);
+
+      const yearStart = today.startOf("year");
+      const yearStartYmd = yearStart.toISODate() ?? `${todayYmd.slice(0, 4)}-01-01`;
+
+      const prevYearStart = today.minus({ years: 1 }).startOf("year");
+      let prevYearEnd = prevYearStart.plus({ days: today.ordinal - 1 });
+      if (prevYearEnd.year != prevYearStart.year) prevYearEnd = prevYearStart.endOf("year");
+      const prevYearStartYmd = prevYearStart.toISODate() ?? `${Number(todayYmd.slice(0, 4)) - 1}-01-01`;
+      const prevYearEndYmd = prevYearEnd.toISODate() ?? addDaysYmd(prevYearStartYmd, today.ordinal - 1);
+
+      const [rangeJobs, prevRange, weekCur, weekPrev, monthCur, monthPrev, yearCur, yearPrev] = await Promise.all([
+        listFinishedJobsWithNetBetween(startIso, endIso),
+        listFinishedJobsWithNetBetween(prevIso.startIso, prevIso.endIso),
+        fetchTotals(weekStartYmd, todayYmd),
+        fetchTotals(weekPrevStartYmd, weekPrevEndYmd),
+        fetchTotals(monthStartYmd, todayYmd),
+        fetchTotals(prevMonthStartYmd, prevMonthEndYmd),
+        fetchTotals(yearStartYmd, todayYmd),
+        fetchTotals(prevYearStartYmd, prevYearEndYmd),
+      ]);
+
+      const byDay = new Map<string, { total: number; jobs: number }>();
+      let grand = 0;
+      for (const j of rangeJobs) {
+        const total = toNumber(j.net_total);
+        grand += total;
+
+        const day = ymdInTimeZone(new Date(j.created_at));
+        const cur = byDay.get(day) ?? { total: 0, jobs: 0 };
+        cur.total += total;
+        cur.jobs += 1;
+        byDay.set(day, cur);
+      }
+
+      const sorted = Array.from(byDay.entries())
+        .sort((a, b) => a[0].localeCompare(b[0]))
+        .map(([day, v]) => ({ day, total: v.total, jobs: v.jobs }));
+
+      setRows(sorted);
+      setSumTotal(grand);
+      setSumJobs(rangeJobs.length);
+
+      const prevSum = prevRange.reduce((acc, j) => acc + toNumber(j.net_total), 0);
+      setPrevTotal(prevSum);
+      setPrevJobs(prevRange.length);
+
+      setWeekTotal(weekCur.total);
+      setWeekPrevTotal(weekPrev.total);
+      setWeekLabel(`${weekStartYmd} → ${todayYmd}`);
+
+      setMonthTotal(monthCur.total);
+      setMonthPrevTotal(monthPrev.total);
+      setMonthLabel(`${monthStartYmd} → ${todayYmd}`);
+
+      setYearTotal(yearCur.total);
+      setYearPrevTotal(yearPrev.total);
+      setYearLabel(`${yearStartYmd} → ${todayYmd}`);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Eroare la rapoarte");
+    } finally {
+      setLoading(false);
+    }
+  }
 
   useEffect(() => {
-    let cancelled = false;
+    void refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-    setLoading(true);
-    setError(null);
+  const avg = useMemo(() => (sumJobs ? sumTotal / sumJobs : 0), [sumJobs, sumTotal]);
 
-    (async () => {
-      try {
-        const [
-          selRows,
-          prevRows,
-          weekRows,
-          prevWeekRows,
-          monthRows,
-          prevMonthRows,
-          yearRows,
-          prevYearRows,
-        ] = await Promise.all([
-          fetchRowsBetween(ranges.start, ranges.end),
-          fetchRowsBetween(ranges.prev.start, ranges.prev.end),
-          fetchRowsBetween(ranges.week.start, ranges.week.end),
-          fetchRowsBetween(ranges.week.prevStart, ranges.week.prevEnd),
-          fetchRowsBetween(ranges.month.start, ranges.month.end),
-          fetchRowsBetween(ranges.month.prevStart, ranges.month.prevEnd),
-          fetchRowsBetween(ranges.year.start, ranges.year.end),
-          fetchRowsBetween(ranges.year.prevStart, ranges.year.prevEnd),
-        ]);
 
-        if (cancelled) return;
+  function renderDeltaLine(current: number, previous: number) {
+    const { delta, pct } = deltaInfo(current, previous);
+    const sign = delta >= 0 ? "+" : "-";
+    const abs = Math.abs(delta);
+    const pctStr = pct == null ? "" : ` (${pct >= 0 ? "+" : ""}${pct.toFixed(1)}%)`;
 
-        setSelectedRows(selRows);
-        setSelectedTotals(calcTotals(selRows));
-
-        setPrevTotals(calcTotals(prevRows));
-        setWeekTotals(calcTotals(weekRows));
-        setPrevWeekTotals(calcTotals(prevWeekRows));
-        setMonthTotals(calcTotals(monthRows));
-        setPrevMonthTotals(calcTotals(prevMonthRows));
-        setYearTotals(calcTotals(yearRows));
-        setPrevYearTotals(calcTotals(prevYearRows));
-      } catch (e: any) {
-        if (!cancelled) setError(e?.message ?? "Eroare la încărcarea raportului");
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [ranges.start, ranges.end, ranges.prev.start, ranges.prev.end, ranges.week.start, ranges.week.end, ranges.week.prevStart, ranges.week.prevEnd, ranges.month.start, ranges.month.end, ranges.month.prevStart, ranges.month.prevEnd, ranges.year.start, ranges.year.end, ranges.year.prevStart, ranges.year.prevEnd]);
-
-  const intervalDelta = selectedTotals.net - prevTotals.net;
-  const intervalPct = prevTotals.net !== 0 ? (intervalDelta / prevTotals.net) * 100 : null;
-
-  const weekDelta = weekTotals.net - prevWeekTotals.net;
-  const weekPct = prevWeekTotals.net !== 0 ? (weekDelta / prevWeekTotals.net) * 100 : null;
-
-  const monthDelta = monthTotals.net - prevMonthTotals.net;
-  const monthPct = prevMonthTotals.net !== 0 ? (monthDelta / prevMonthTotals.net) * 100 : null;
-
-  const yearDelta = yearTotals.net - prevYearTotals.net;
-  const yearPct = prevYearTotals.net !== 0 ? (yearDelta / prevYearTotals.net) * 100 : null;
-
-  const dailyRows = useMemo(() => {
-    const map = new Map<string, { ymd: string; net: number; jobs: number }>();
-
-    for (const j of selectedRows) {
-      const ymd = getJobDateYmdRO(j);
-      if (!ymd) continue;
-      if (ymd < ranges.start || ymd > ranges.end) continue;
-
-      const curr = map.get(ymd) ?? { ymd, net: 0, jobs: 0 };
-      curr.jobs += 1;
-      curr.net += (j.net_total ?? 0);
-      map.set(ymd, curr);
-    }
-
-    return Array.from(map.values()).sort((a, b) => a.ymd.localeCompare(b.ymd));
-  }, [selectedRows, ranges.start, ranges.end]);
-
-  const unknownCustomerCount = useMemo(() => {
-    let c = 0;
-    for (const j of selectedRows) {
-      const name = clampNonEmpty((j as any)?.customer?.name);
-      if (!name) c++;
-    }
-    return c;
-  }, [selectedRows]);
+    return (
+      <span style={{ fontWeight: 950 }}>
+        {sign}
+        {moneyRON(abs)}
+        {pctStr}
+      </span>
+    );
+  }
 
   return (
-    <div className="p-6 space-y-4">
-      {/* Header (ca în UI vechi) */}
-      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-        <div className="space-y-1">
-          <h1 className="text-2xl font-semibold">Rapoarte (NET)</h1>
-          <div className="text-sm text-muted-foreground">
-            Venit net pe interval (lucrări cu status “Finalizat”)
-          </div>
-          <div className="text-sm text-muted-foreground">
-            Interval: <span className="font-medium">{ranges.start}</span> →{" "}
-            <span className="font-medium">{ranges.end}</span>
-            {loading ? <span className="ml-2">• Se încarcă...</span> : null}
-            {error ? <span className="ml-2 text-red-500">• {error}</span> : null}
-          </div>
+    <div>
+      <div className="page-header">
+        <div>
+          <div className="h1">Rapoarte (NET)</div>
+          <div className="muted">Venit net pe interval (lucrări cu status “Finalizat”)</div>
         </div>
 
-        <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
-          <Input type="date" value={draftStart} onChange={(e) => setDraftStart(e.target.value)} />
-          <Input type="date" value={draftEnd} onChange={(e) => setDraftEnd(e.target.value)} />
-          <Button onClick={onRefresh} disabled={loading}>
-            Refresh
-          </Button>
+        <div className="row">
+          <input className="input" style={{ width: 170 }} type="date" value={startYmd} onChange={(e) => setStartYmd(e.target.value)} />
+          <input className="input" style={{ width: 170 }} type="date" value={endYmd} onChange={(e) => setEndYmd(e.target.value)} />
+          <button className="btn primary" onClick={() => void refresh()}>{loading ? "Calculez…" : "Refresh"}</button>
         </div>
       </div>
 
-      {/* Carduri sus */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        {/* Interval selectat */}
-        <Card className="p-5">
-          <div className="font-semibold mb-3">Interval selectat</div>
+      {err && (
+        <div className="card card-pad" style={{ borderColor: "rgba(220,38,38,0.35)", marginBottom: 12 }}>
+          <div style={{ color: "crimson", fontWeight: 900 }}>{err}</div>
+        </div>
+      )}
 
-          <div className="text-sm text-muted-foreground mb-4">
-            {ranges.start} → {ranges.end}
+      <div className="grid2">
+        <div className="card card-pad">
+          <div style={{ fontWeight: 950, marginBottom: 6 }}>Interval selectat</div>
+          <div className="muted" style={{ marginBottom: 8 }}>{startYmd} → {endYmd}</div>
+
+          <div className="row" style={{ justifyContent: "space-between" }}>
+            <span className="muted">Total net</span>
+            <b>{moneyRON(sumTotal)}</b>
+          </div>
+          <div className="row" style={{ justifyContent: "space-between" }}>
+            <span className="muted">Lucrări finalizate</span>
+            <b>{sumJobs}</b>
+          </div>
+          <div className="row" style={{ justifyContent: "space-between" }}>
+            <span className="muted">Medie net / lucrare</span>
+            <b>{moneyRON(avg)}</b>
+          </div>
+          <div className="row" style={{ justifyContent: "space-between", marginTop: 8 }}>
+            <span className="muted">Vs perioada precedentă</span>
+            {renderDeltaLine(sumTotal, prevTotal)}
+          </div>
+          <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>
+            Perioada precedentă: {addDaysYmd(startYmd, -daysBetweenInclusive(startYmd, endYmd))} → {addDaysYmd(startYmd, -1)} ({prevJobs} lucrări)
+          </div>
+        </div>
+
+        <div className="card card-pad">
+          <div style={{ fontWeight: 950, marginBottom: 6 }}>Săptămână / Lună / An (RO)</div>
+          <div className="muted" style={{ marginBottom: 10 }}>
+            Calcul bazat pe NET (tabelul <b>job_net_items</b>). Lucrările fără NET contribuie cu 0.
           </div>
 
-          <div className="space-y-2">
-            <div className="flex items-center justify-between text-sm">
-              <span className="text-muted-foreground">Total net</span>
-              <span className="font-semibold">{formatRON(selectedTotals.net)}</span>
-            </div>
-
-            <div className="flex items-center justify-between text-sm">
-              <span className="text-muted-foreground">Lucrări finalizate</span>
-              <span className="font-semibold">{selectedTotals.jobs}</span>
-            </div>
-
-            <div className="flex items-center justify-between text-sm">
-              <span className="text-muted-foreground">Medie net / lucrare</span>
-              <span className="font-semibold">{formatRON(selectedTotals.avg)}</span>
-            </div>
-
-            <div className="pt-3 mt-3 border-t space-y-1">
-              <div className="flex items-center justify-between text-sm">
-                <span className="text-muted-foreground">Vs perioada precedentă</span>
-                <span className="font-semibold">
-                  {formatSignedRON(intervalDelta)} ({formatPct(intervalPct)})
-                </span>
-              </div>
-
-              <div className="text-xs text-muted-foreground">
-                Perioada precedentă: {ranges.prev.start} → {ranges.prev.end} ({prevTotals.jobs} lucrări)
-              </div>
-            </div>
-
-            {unknownCustomerCount ? (
-              <div className="pt-3 mt-3 border-t text-xs text-muted-foreground">
-                Notă: {unknownCustomerCount} lucrări au “Client necunoscut”.
-              </div>
-            ) : null}
+          <div className="row" style={{ justifyContent: "space-between" }}>
+            <span className="muted">Săptămâna curentă</span>
+            <b>{moneyRON(weekTotal)}</b>
           </div>
-        </Card>
-
-        {/* Săptămână / Lună / An */}
-        <Card className="p-5">
-          <div className="font-semibold mb-1">Săptămână / Lună / An (RO)</div>
-          <div className="text-xs text-muted-foreground mb-4">
-            Calcul bazat pe NET (job_net_items). Lucrările fără NET contribuie cu 0.
+          <div className="row" style={{ justifyContent: "space-between" }}>
+            <span className="muted">Vs săptămâna precedentă</span>
+            {renderDeltaLine(weekTotal, weekPrevTotal)}
           </div>
+          <div className="muted" style={{ fontSize: 12, marginBottom: 10 }}>{weekLabel}</div>
 
-          <div className="space-y-4">
-            {/* Week */}
-            <div className="space-y-1">
-              <div className="flex items-center justify-between text-sm">
-                <span className="text-muted-foreground">Săptămâna curentă</span>
-                <span className="font-semibold">{formatRON(weekTotals.net)}</span>
-              </div>
-              <div className="flex items-center justify-between text-sm">
-                <span className="text-muted-foreground">Vs săptămâna precedentă</span>
-                <span className="font-semibold">
-                  {formatSignedRON(weekDelta)} ({formatPct(weekPct)})
-                </span>
-              </div>
-              <div className="text-xs text-muted-foreground">
-                {ranges.week.start} → {ranges.week.end}
-              </div>
-            </div>
-
-            {/* Month */}
-            <div className="space-y-1">
-              <div className="flex items-center justify-between text-sm">
-                <span className="text-muted-foreground">Luna curentă</span>
-                <span className="font-semibold">{formatRON(monthTotals.net)}</span>
-              </div>
-              <div className="flex items-center justify-between text-sm">
-                <span className="text-muted-foreground">Vs luna precedentă (MTD)</span>
-                <span className="font-semibold">
-                  {formatSignedRON(monthDelta)} ({formatPct(monthPct)})
-                </span>
-              </div>
-              <div className="text-xs text-muted-foreground">
-                {ranges.month.start} → {ranges.month.end}
-              </div>
-            </div>
-
-            {/* Year */}
-            <div className="space-y-1">
-              <div className="flex items-center justify-between text-sm">
-                <span className="text-muted-foreground">Anul curent</span>
-                <span className="font-semibold">{formatRON(yearTotals.net)}</span>
-              </div>
-              <div className="flex items-center justify-between text-sm">
-                <span className="text-muted-foreground">Vs anul precedent (YTD)</span>
-                <span className="font-semibold">
-                  {formatSignedRON(yearDelta)} ({formatPct(yearPct)})
-                </span>
-              </div>
-              <div className="text-xs text-muted-foreground">
-                {ranges.year.start} → {ranges.year.end}
-              </div>
-            </div>
+          <div className="row" style={{ justifyContent: "space-between" }}>
+            <span className="muted">Luna curentă</span>
+            <b>{moneyRON(monthTotal)}</b>
           </div>
-        </Card>
+          <div className="row" style={{ justifyContent: "space-between" }}>
+            <span className="muted">Vs luna precedentă (MTD)</span>
+            {renderDeltaLine(monthTotal, monthPrevTotal)}
+          </div>
+          <div className="muted" style={{ fontSize: 12, marginBottom: 10 }}>{monthLabel}</div>
+
+          <div className="row" style={{ justifyContent: "space-between" }}>
+            <span className="muted">Anul curent</span>
+            <b>{moneyRON(yearTotal)}</b>
+          </div>
+          <div className="row" style={{ justifyContent: "space-between" }}>
+            <span className="muted">Vs anul precedent (YTD)</span>
+            {renderDeltaLine(yearTotal, yearPrevTotal)}
+          </div>
+          <div className="muted" style={{ fontSize: 12 }}>{yearLabel}</div>
+        </div>
       </div>
 
-      {/* Venit net / zi */}
-      <Card className="p-5">
-        <div className="font-semibold mb-3">Venit net / zi</div>
+      <div className="card card-pad" style={{ marginTop: 10 }}>
+        <div style={{ fontWeight: 950, marginBottom: 8 }}>Venit net / zi</div>
 
-        <div className="overflow-auto">
-          <table className="w-full text-sm">
-            <thead className="text-left border-b">
-              <tr>
-                <th className="py-2 pr-3">Zi</th>
-                <th className="py-2 pr-3">Lucrări</th>
-                <th className="py-2 pr-3 text-right">Total net</th>
+        <table className="table">
+          <thead>
+            <tr>
+              <th>Zi</th>
+              <th>Lucrări</th>
+              <th>Total net</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.day}>
+                <td style={{ fontWeight: 900 }}>{r.day}</td>
+                <td>{r.jobs}</td>
+                <td style={{ fontWeight: 950 }}>{moneyRON(r.total)}</td>
               </tr>
-            </thead>
-            <tbody>
-              {dailyRows.map((r) => (
-                <tr key={r.ymd} className="border-b last:border-b-0">
-                  <td className="py-2 pr-3">{r.ymd}</td>
-                  <td className="py-2 pr-3">{r.jobs}</td>
-                  <td className="py-2 pr-3 text-right font-medium">{formatRON(r.net)}</td>
-                </tr>
-              ))}
+            ))}
 
-              {!loading && dailyRows.length === 0 ? (
-                <tr>
-                  <td colSpan={3} className="py-6 text-center text-muted-foreground">
-                    Nu există lucrări finalizate în interval.
-                  </td>
-                </tr>
-              ) : null}
-            </tbody>
-          </table>
-        </div>
+            {!loading && rows.length === 0 && (
+              <tr>
+                <td colSpan={3} className="muted">
+                  Nu există lucrări finalizate în interval.
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
 
-        <div className="mt-3 text-xs text-muted-foreground">
-          Notă: raportarea se bazează pe <span className="font-medium">created_at</span> al lucrării. Dacă vrei “data finalizării”
-          exactă, raportăm după momentul din <span className="font-medium">job_status_history</span> când statusul devine “finished”.
+        <div className="muted" style={{ marginTop: 10 }}>
+          Notă: raportarea se bazează pe <b>created_at</b> al lucrării. Dacă vrei “data finalizării” exactă, raportăm după momentul din <b>job_status_history</b> când statusul devine “finished”.
         </div>
-
-        <div className="mt-2 text-xs text-muted-foreground">
-          Timezone: <span className="font-medium">{RO_ZONE}</span> • Acum:{" "}
-          <span className="font-medium">{now.toFormat("yyyy-LL-dd HH:mm")}</span>
-        </div>
-      </Card>
+      </div>
     </div>
   );
 }
