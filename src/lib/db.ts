@@ -70,6 +70,8 @@ export type JobRow = {
   appointment_id: string | null;
   progress: JobProgressStatus;
   discount_value: number;
+  advance_paid: number;
+  is_paid: boolean;
   notes: string | null;
   created_at: string;
   customer: Customer;
@@ -662,7 +664,7 @@ export async function listJobsRecent(limit = 50): Promise<JobRow[]> {
   const { data, error } = await supabase
     .from("jobs")
     .select(
-      "id, appointment_id, progress, discount_value, notes, created_at, customer:customers(id, name, phone, email), vehicle:vehicles(id, make, model, year, plate)",
+      "id, appointment_id, progress, discount_value, advance_paid, is_paid, notes, created_at, customer:customers(id, name, phone, email), vehicle:vehicles(id, make, model, year, plate)",
     )
     .order("created_at", { ascending: false })
     .limit(limit);
@@ -679,6 +681,8 @@ export async function listJobsRecent(limit = 50): Promise<JobRow[]> {
       appointment_id: (r.appointment_id as string | null) ?? null,
       progress: r.progress as JobProgressStatus,
       discount_value: toNumber(r.discount_value),
+      advance_paid: toNumber(r.advance_paid),
+      is_paid: Boolean(r.is_paid),
       notes: (r.notes as string | null) ?? null,
       created_at: String(r.created_at),
       customer,
@@ -717,6 +721,8 @@ export async function updateJobMeta(
   jobId: string,
   patch: Partial<{
     discount_value: number;
+    advance_paid: number;
+    is_paid: boolean;
     notes: string | null;
   }>,
 ): Promise<void> {

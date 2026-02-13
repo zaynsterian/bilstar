@@ -271,6 +271,8 @@ export default function JobsPage() {
 
   const [discountValue, setDiscountValue] = useState("0");
   const [notesValue, setNotesValue] = useState("");
+  const [advancePaidValue, setAdvancePaidValue] = useState("0");
+  const [isPaid, setIsPaid] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -400,6 +402,8 @@ export default function JobsPage() {
     if (!selectedJob) return;
     setDiscountValue(String(selectedJob.discount_value ?? 0));
     setNotesValue(selectedJob.notes ?? "");
+    setAdvancePaidValue(String(selectedJob.advance_paid ?? 0));
+    setIsPaid(Boolean(selectedJob.is_paid));
   }, [selectedJob]);
 
   // vehicles for create job
@@ -586,6 +590,24 @@ export default function JobsPage() {
       await refreshJobs();
     } catch (e) {
       setErr(e instanceof Error ? e.message : "Eroare la salvare");
+    }
+  }
+
+  async function onSavePayment() {
+    if (!selectedJob) return;
+
+    setErr(null);
+    try {
+      let a = Number(advancePaidValue);
+      if (!Number.isFinite(a) || a < 0) throw new Error("Avans invalid.");
+
+      // If marked as paid, force advance to match current grand total (after discount).
+      if (isPaid) a = grand;
+
+      await updateJobMeta(selectedJob.id, { advance_paid: a, is_paid: isPaid });
+      await refreshJobs();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Eroare la salvare plată");
     }
   }
 
@@ -921,6 +943,17 @@ export default function JobsPage() {
   const discountNum = selectedJob ? (selectedJob.discount_value ?? 0) : 0;
   const grand = Math.max(0, totals.subtotal - discountNum);
 
+  const advancePaidNum = useMemo(() => {
+    const n = Number(advancePaidValue);
+    if (!Number.isFinite(n) || n < 0) return 0;
+    return n;
+  }, [advancePaidValue]);
+
+  const remainingToPay = useMemo(() => {
+    if (isPaid) return 0;
+    return Math.max(0, grand - advancePaidNum);
+  }, [grand, advancePaidNum, isPaid]);
+
   const selectedOperation = useMemo(() => {
     if (!opId) return null;
     return operations.find((o) => o.id === opId) ?? null;
@@ -1031,15 +1064,36 @@ export default function JobsPage() {
     const hasDiscount = Math.abs(discount) >= 0.01;
     const grandTotal = Math.max(0, totals.subtotal - discount);
 
-    // --- Totals (right aligned under Subtotal column)
+    // --- Notes (left) + Totals (right)
     const totalsTop = tableEndY + 30;
     const lineH = 14;
 
-    // If we don't have enough room for totals + signature, move to a new page.
+    const noteText = (selectedJob.notes ?? "").trim();
+
+    // Layout split: Notes on the left, totals on the right
+    const contentW = pageW - marginX * 2;
+    const totalsAreaW = 240;
+    const colGap = 20;
+    const notesW = Math.max(200, contentW - totalsAreaW - colGap);
+    const notesX1 = marginX;
+
+    // Estimate notes height to decide if we need a new page
+    let estNotesHeight = 0;
+    let noteLines: string[] = [];
+    if (noteText) {
+      doc.setFont("DejaVuSans", "normal");
+      doc.setFontSize(10);
+      noteLines = doc.splitTextToSize(noteText, notesW) as string[];
+      // header + padding + text lines
+      estNotesHeight = 12 + 8 + noteLines.length * lineH + 10;
+    }
+
+    // If we don't have enough room for notes/totals + signature, move to a new page.
     const signatureLineY = pageH - 55;
     const estTotalsHeight = (hasDiscount ? 5 : 3) * lineH + 16;
+    const estBlockHeight = Math.max(estTotalsHeight, estNotesHeight);
     let totalsOnNewPage = false;
-    if (totalsTop + estTotalsHeight > signatureLineY - 80) {
+    if (totalsTop + estBlockHeight > signatureLineY - 80) {
       doc.addPage();
       totalsOnNewPage = true;
     }
@@ -1050,6 +1104,28 @@ export default function JobsPage() {
 
     // On a fresh page (no table), place totals comfortably below the header area.
     let yTot = totalsOnNewPage ? 140 : totalsTop;
+
+    // Notes block (left) aligned with totals top
+    let yNotesBottom = yTot;
+    if (noteText) {
+      doc.setFont("DejaVuSans", "bold");
+      doc.setFontSize(11);
+      doc.text("Note:", notesX1, yTot);
+
+      doc.setFont("DejaVuSans", "normal");
+      doc.setFontSize(10);
+      const textY = yTot + 14;
+      doc.text(noteLines, notesX1, textY);
+
+      yNotesBottom = textY + noteLines.length * lineH + 2;
+
+      // Simple frame so the notes stay visually separated from totals
+      const boxTop = yTot - 12;
+      const boxPad = 8;
+      const boxH = (yNotesBottom - boxTop) + boxPad;
+      doc.setLineWidth(0.6);
+      doc.rect(notesX1 - 6, boxTop, notesW + 12, boxH);
+    }
 
     const labelX2 = activeTableRight - 120;
     const valueX2 = activeTableRight;
@@ -1098,7 +1174,7 @@ export default function JobsPage() {
 
     // --- Watermark logo centered between TOTAL and signature
     try {
-      const upper = yTotalsBottom;
+      const upper = Math.max(yTotalsBottom, yNotesBottom);
       const lower = sigLineY - 24;
       const available = lower - upper;
 
@@ -1136,7 +1212,7 @@ export default function JobsPage() {
       // Best-effort watermark.
     }
 
-    // Notes are intentionally excluded from the exported PDF.
+    // Notes are included and laid out next to totals to avoid overlap.
 
     const safeName = selectedJob.customer.name
       .replace(/[^a-zA-Z0-9_\- ]/g, "")
@@ -1394,6 +1470,62 @@ export default function JobsPage() {
                   <div className="row" style={{ justifyContent: "space-between", fontSize: 16 }}>
                     <span style={{ fontWeight: 950 }}>TOTAL</span>
                     <span style={{ fontWeight: 950 }}>{moneyRON(grand)}</span>
+                  </div>
+                </div>
+              </div>
+
+
+              <div className="card card-pad" style={{ boxShadow: "none" }}>
+                <div className="row" style={{ justifyContent: "space-between", marginBottom: 8 }}>
+                  <div className="row" style={{ gap: 10, alignItems: "center" }}>
+                    <div style={{ fontWeight: 950 }}>Plată</div>
+                    {isPaid ? <span className="badge">PLĂTIT</span> : null}
+                  </div>
+
+                  <button className="btn" onClick={() => void onSavePayment()} disabled={!selectedJob}>
+                    Salvează plata
+                  </button>
+                </div>
+
+                <div className="grid2">
+                  <div>
+                    <div className="muted" style={{ marginBottom: 6 }}>Avans (RON)</div>
+                    <input
+                      className="input"
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      value={advancePaidValue}
+                      disabled={isPaid}
+                      onChange={(e) => setAdvancePaidValue(e.target.value)}
+                    />
+                  </div>
+
+                  <div>
+                    <div className="muted" style={{ marginBottom: 6 }}>Mai are de plată</div>
+                    <div style={{ fontWeight: 950, fontSize: 18 }}>{moneyRON(remainingToPay)}</div>
+                    <div className="muted" style={{ marginTop: 4 }}>
+                      Total: {moneyRON(grand)}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="row" style={{ justifyContent: "space-between", marginTop: 10, alignItems: "center" }}>
+                  <label className="row" style={{ gap: 8, cursor: "pointer" }}>
+                    <input
+                      type="checkbox"
+                      checked={isPaid}
+                      onChange={(e) => {
+                        const v = e.target.checked;
+                        setIsPaid(v);
+                        if (v) setAdvancePaidValue(String(grand));
+                      }}
+                    />
+                    <span style={{ fontWeight: 700 }}>Marchează ca plătit</span>
+                  </label>
+
+                  <div className="muted">
+                    Avans: <b>{moneyRON(advancePaidNum)}</b>
                   </div>
                 </div>
               </div>

@@ -109,6 +109,8 @@ create table if not exists public.jobs (
 
   progress public.job_progress_status not null default 'not_started',
   discount_value numeric(12,2) not null default 0,
+  advance_paid numeric(12,2) not null default 0,
+  is_paid boolean not null default false,
   notes text,
 
   created_at timestamptz not null default now()
